@@ -45,6 +45,9 @@ lerna-debug.log*
 # temp directory
 .temp
 .tmp
+/tmp/*
+!/tmp/.gitkeep
+/tmp/.fs-jail/
 
 # Runtime data
 pids

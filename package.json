@@ -36,6 +36,7 @@
     "deepagents": "^1.10.5",
     "langchain": "^1.5.0",
     "pg": "^8.22.0",
+    "playwright": "^1.62.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "typeorm": "^1.0.0",

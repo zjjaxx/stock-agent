@@ -1,12 +1,27 @@
-import { UIMessage } from 'ai';
-import { IsArray, IsOptional, IsString, IsNotEmpty } from 'class-validator';
+import { type UIMessage } from 'ai';
+import {
+  IsIn,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+} from 'class-validator';
 
 export class ChatDto {
-  @IsArray()
+  /** Latest UI message from the client (history is loaded from DB). */
+  @IsObject()
   @IsNotEmpty()
-  messages: UIMessage[];
+  message: UIMessage;
 
   @IsOptional()
   @IsString()
   conversationId?: string;
+
+  @IsOptional()
+  @IsIn(['submit-message', 'regenerate-message'])
+  trigger?: 'submit-message' | 'regenerate-message';
+
+  @IsOptional()
+  @IsString()
+  messageId?: string;
 }

@@ -1,0 +1,444 @@
+#!/usr/bin/env node
+/**
+ * Step0：东财条件选股点选 + 出池（buffett 固化入口）。
+ *
+ * 唯一出池路径：点「去选股」后扫 Result 页 el-table（固定列 + 滚动列按行对齐）。
+ *
+ * 用法:
+ *   node run_step0_xuangu.js -o /tmp/buffett_xuangu_result.json
+ *   node run_step0_xuangu.js --session buffett-xg-demo --pool-json /tmp/buffett_pool.json
+ */
+
+import fs from "node:fs";
+import {
+  marketFromCode,
+  parseArgs,
+  parseJsonText,
+  parseYiNumber,
+  runOpencli,
+} from "./opencli_json.js";
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function oc(session, args, timeoutMs = 120_000) {
+  return runOpencli(["browser", session, ...args], { timeoutMs });
+}
+
+function ocJson(session, ...args) {
+  const proc = oc(session, args);
+  if (proc.returncode !== 0) {
+    throw new Error(
+      `opencli ${args.join(" ")} failed: ${(proc.stderr || proc.stdout).slice(0, 400)}`,
+    );
+  }
+  return parseJsonText(proc.stdout || "");
+}
+
+function findRef(session, { text = null, css = null } = {}) {
+  const args = ["find"];
+  if (text != null) args.push("--text", text);
+  if (css != null) args.push("--css", css);
+  const data = ocJson(session, ...args);
+  return data.entries || [];
+}
+
+function clickRef(session, ref) {
+  const proc = oc(session, ["click", String(ref)]);
+  if (proc.returncode !== 0) {
+    throw new Error(`click ${ref} failed: ${(proc.stderr || proc.stdout).slice(0, 300)}`);
+  }
+}
+
+function fillRef(session, ref, value) {
+  const proc = oc(session, ["fill", String(ref), value]);
+  if (proc.returncode !== 0) {
+    throw new Error(`fill ${ref} failed: ${(proc.stderr || proc.stdout).slice(0, 300)}`);
+  }
+}
+
+/** Element UI spinbutton 常 fill 后值未进模型；必须 get value 验收。 */
+function getValue(session, ref) {
+  const data = ocJson(session, "get", "value", String(ref));
+  return data.value == null ? "" : String(data.value).trim();
+}
+
+function fillVerified(session, ref, expected, { retries = 3 } = {}) {
+  const want = String(expected).trim();
+  let last = "";
+  for (let i = 0; i < retries; i++) {
+    // 先点一下聚焦，再填；Element 受控输入更稳
+    try {
+      clickRef(session, ref);
+    } catch {
+      /* ignore */
+    }
+    sleep(120);
+    fillRef(session, ref, want);
+    sleep(200);
+    last = getValue(session, ref);
+    if (last === want) return last;
+    // 偶发尾零/空：清空再填一次
+    sleep(150);
+  }
+  throw new Error(`fill 校验失败 ref=${ref} want=${want} got=${JSON.stringify(last)}`);
+}
+
+function evalJs(session, js) {
+  const proc = oc(session, ["eval", js]);
+  if (proc.returncode !== 0) {
+    throw new Error(`eval failed: ${(proc.stderr || proc.stdout).slice(0, 300)}`);
+  }
+  return proc.stdout || "";
+}
+
+function chips(session) {
+  const raw = evalJs(
+    session,
+    '(function(){return JSON.stringify([].map.call(document.querySelectorAll(".index-tag"),' +
+      "function(e){return e.textContent.trim();}));})()",
+  );
+  return parseJsonText(raw);
+}
+
+function hasDividendChip(chipList) {
+  return (chipList || []).some((x) => String(x).includes("最新股息率3.5%-100%"));
+}
+
+function dismissPopover(session) {
+  const proc = oc(session, ["keys", "Escape"]);
+  if (proc.returncode !== 0) {
+    // keys 不可用时忽略，后续靠重新 open 弹层
+    return;
+  }
+  sleep(250);
+}
+
+function pickRef(entries, pred) {
+  for (const e of entries) {
+    if (pred(e)) return Number(e.ref);
+  }
+  throw new Error("找不到目标元素");
+}
+
+function setMarketCap(session) {
+  const entries = findRef(session, { css: ".listItem.main-item" });
+  clickRef(session, pickRef(entries, (e) => e.text === "总市值"));
+  sleep(400);
+  const opts = findRef(session, { css: ".pickerPopoverContainer .listItem" });
+  clickRef(session, pickRef(opts, (e) => e.text === ">1000亿"));
+  sleep(200);
+  const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
+  clickRef(session, Number(btns[0].ref));
+  sleep(350);
+}
+
+/**
+ * 自定义股息区间 3.5–100%。
+ * 历史事故：只 fill 不验值、立刻点确定 → chip 不出现或变成 3.5%-5%。
+ */
+function setDividend(session, { attempts = 3 } = {}) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      dismissPopover(session);
+      const entries = findRef(session, { css: ".listItem.main-item" });
+      clickRef(session, pickRef(entries, (e) => e.text === "最新股息率"));
+      sleep(500);
+      const inputs = findRef(session, { css: ".pickerPopoverContainer .el-input__inner" });
+      if (inputs.length < 2) {
+        throw new Error(`股息率自定义输入框不足 2 个（got ${inputs.length}）`);
+      }
+      const lo = fillVerified(session, inputs[0].ref, "3.5");
+      sleep(150);
+      const hi = fillVerified(session, inputs[1].ref, "100");
+      // 点确定前再读一次，防止第二次 fill 冲掉第一次
+      const lo2 = getValue(session, inputs[0].ref);
+      const hi2 = getValue(session, inputs[1].ref);
+      if (lo2 !== "3.5" || hi2 !== "100") {
+        throw new Error(`确定前复检失败 lo=${lo2}/${lo} hi=${hi2}/${hi}`);
+      }
+      const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
+      if (!btns.length) throw new Error("股息弹层找不到确定按钮");
+      clickRef(session, Number(btns[0].ref));
+      sleep(450);
+      const chipList = chips(session);
+      if (hasDividendChip(chipList)) {
+        if (attempt > 1) console.log(`setDividend ok on attempt=${attempt}`);
+        return chipList;
+      }
+      throw new Error(`股息 chip 未落地: ${JSON.stringify(chipList)}`);
+    } catch (exc) {
+      lastErr = exc;
+      console.log(`setDividend attempt ${attempt}/${attempts} failed: ${exc.message || exc}`);
+      dismissPopover(session);
+      sleep(400);
+    }
+  }
+  throw new Error(`setDividend 重试 ${attempts} 次仍失败: ${lastErr?.message || lastErr}`);
+}
+
+function currentUrl(session) {
+  const raw = evalJs(session, "(function(){return location.href;})()");
+  return raw.trim() ? raw.trim().split(/\r?\n/)[0] : "";
+}
+
+function clickGoSelect(session) {
+  const btns = findRef(session, { css: ".searchBtn" });
+  clickRef(session, pickRef(btns, (e) => e.text === "去选股"));
+}
+
+function waitResultPage(session, { timeoutMs = 25000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const url = currentUrl(session);
+    if (url.includes("/Result")) {
+      // 等表格行出现
+      const n = evalJs(
+        session,
+        '(function(){var f=document.querySelector(".el-table__fixed-body-wrapper")||document.querySelector(".el-table__fixed .el-table__body");return String(f?f.querySelectorAll("tr").length:0);})()',
+      )
+        .trim()
+        .split(/\r?\n/)
+        .pop();
+      if (Number(n) > 0) return url;
+    }
+    sleep(800);
+  }
+  throw new Error("等待 Result 页/表格超时");
+}
+
+function parsePct(raw) {
+  if (raw == null || raw === "") return null;
+  const m = String(raw)
+    .replace(/,/g, "")
+    .trim()
+    .match(/^([+-]?\d+(?:\.\d+)?)\s*%?$/);
+  return m ? Number(m[1]) : null;
+}
+
+/** 从 Result 页 el-table 扫出结构化池（固定列 + 滚动列按行对齐） */
+function scrapeResultDom(session) {
+  const raw = evalJs(
+    session,
+    `(function(){
+  function cells(tr){
+    return [].map.call(tr.querySelectorAll("td"), function(td){
+      return (td.innerText||"").trim().replace(/\\s+/g," ");
+    });
+  }
+  function headerCells(root){
+    if(!root) return [];
+    return [].map.call(root.querySelectorAll("th"), function(th){
+      return (th.innerText||"").trim().replace(/\\s+/g," ");
+    });
+  }
+  var fixedRoot = document.querySelector(".el-table__fixed-body-wrapper")
+    || document.querySelector(".el-table__fixed .el-table__body");
+  var bodyRoot = document.querySelector(".el-table__body-wrapper .el-table__body");
+  if(!bodyRoot){
+    var bodies = document.querySelectorAll(".el-table__body");
+    bodyRoot = bodies.length > 1 ? bodies[1] : bodies[0];
+  }
+  var fixedHead = document.querySelector(".el-table__fixed-header-wrapper")
+    || document.querySelector(".el-table__fixed .el-table__header");
+  var bodyHead = document.querySelector(".el-table__header-wrapper .el-table__header")
+    || document.querySelector(".el-table__header");
+  if(!fixedRoot || !bodyRoot){
+    return JSON.stringify({ok:false, error:"找不到 el-table 固定列/滚动列"});
+  }
+  var fixedRows = [].map.call(fixedRoot.querySelectorAll("tr"), cells);
+  var bodyRows = [].map.call(bodyRoot.querySelectorAll("tr"), cells);
+  var totalHint = null;
+  var m = (document.body.innerText||"").match(/共\\s*(\\d+)\\s*只/);
+  if(!m) m = (document.body.innerText||"").match(/共[\\s\\u00a0]*([0-9]+)[\\s\\u00a0]*只/);
+  if(m) totalHint = Number(m[1]);
+  return JSON.stringify({
+    ok:true,
+    url: location.href,
+    headerFixed: headerCells(fixedHead),
+    headerBody: headerCells(bodyHead),
+    fixedRows: fixedRows,
+    bodyRows: bodyRows,
+    totalHint: totalHint
+  });
+})()`,
+  );
+  const data = parseJsonText(raw);
+  if (!data.ok) throw new Error(data.error || "DOM 扫描失败");
+
+  const { fixedRows, bodyRows, headerBody = [], totalHint } = data;
+  if (!fixedRows.length) throw new Error("结果表无数据行");
+  if (fixedRows.length !== bodyRows.length) {
+    throw new Error(
+      `固定列/滚动列行数不一致 fixed=${fixedRows.length} body=${bodyRows.length}`,
+    );
+  }
+
+  // 表头定位股息/市值/PE/PB（滚动区）；代码/名称在固定列固定下标
+  const normH = (h) => String(h || "").replace(/\s+/g, "");
+  const findCol = (pred) => headerBody.findIndex((h) => pred(normH(h)));
+  let divIdx = findCol((h) => h.includes("最新股息率") || h.includes("股息率"));
+  let mktIdx = findCol((h) => h.includes("总市值") && !h.includes("流通"));
+  let peIdx = findCol((h) => h.includes("市盈率"));
+  let pbIdx = findCol((h) => h.includes("市净率"));
+  // 兜底：实跑滚动列常见布局 6=股息 7=总市值 ... 15=PE 16=PB
+  if (divIdx < 0) divIdx = 6;
+  if (mktIdx < 0) mktIdx = 7;
+  if (peIdx < 0) peIdx = 15;
+  if (pbIdx < 0) pbIdx = 16;
+
+  const pool = [];
+  for (let i = 0; i < fixedRows.length; i++) {
+    const f = fixedRows[i];
+    const b = bodyRows[i] || [];
+    const code = String(f[2] || "").trim();
+    if (!/^\d{6}$/.test(code)) continue;
+    let name = String(f[3] || "").replace(/ /g, "").replace(/^(XD|XR|DR)/, "");
+    const price = parseYiNumber(f[4]);
+    const div = parsePct(b[divIdx]);
+    const mktRaw = b[mktIdx];
+    const mkt = parseYiNumber(mktRaw); // 元
+    let market;
+    try {
+      market = marketFromCode(code);
+    } catch {
+      market = null;
+    }
+    pool.push({
+      code,
+      name,
+      market,
+      div,
+      mkt,
+      mkt_yi: mkt != null ? mkt / 1e8 : null,
+      price,
+      pb: parseYiNumber(b[pbIdx]),
+      pe: parseYiNumber(b[peIdx]),
+    });
+  }
+
+  if (!pool.length) throw new Error("DOM 扫表未解析出有效代码");
+  if (totalHint != null && pool.length !== totalHint) {
+    throw new Error(
+      `扫表条数 ${pool.length} ≠ 页内「共${totalHint}只」，可能分页未加载全`,
+    );
+  }
+
+  return {
+    source: "xuangu-result-dom",
+    url: data.url,
+    n: pool.length,
+    totalHint,
+    headerFixed: data.headerFixed,
+    headerBody: data.headerBody,
+    colIndex: { div: divIdx, mkt: mktIdx, pe: peIdx, pb: pbIdx },
+    pool,
+  };
+}
+
+function captureResultDom(session, outPath) {
+  // 若还在编辑页，点去选股
+  if (!currentUrl(session).includes("/Result")) {
+    clickGoSelect(session);
+  }
+  const url = waitResultPage(session);
+  const scraped = scrapeResultDom(session);
+  const payload = {
+    ...scraped,
+    chips: chips(session),
+    fetched_at: new Date().toISOString(),
+  };
+  fs.writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return {
+    source: "xuangu-result-dom",
+    n: scraped.n,
+    url: url || scraped.url,
+    chips: payload.chips,
+    path: outPath,
+    pool: scraped.pool,
+    totalHint: scraped.totalHint,
+  };
+}
+
+function writePool(poolJson, pool) {
+  fs.writeFileSync(
+    poolJson,
+    `${JSON.stringify({ n: pool.length, pool, source_note: "step0-xuangu-result-dom" }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function main() {
+  const now = new Date();
+  const hhmmss = [
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ].join("");
+  const args = parseArgs(process.argv.slice(2), {
+    defaults: {
+      session: `buffett-xg-${hhmmss}`,
+      output: "/tmp/buffett_xuangu_result.json",
+      poolJson: "/tmp/buffett_pool.json",
+    },
+  });
+  const session = args.session;
+  const outPath = args.output;
+  const poolJson = args.poolJson || args["pool-json"];
+
+  try {
+    console.log(`session=${session}`);
+    const proc = oc(session, ["open", "https://xuangu.eastmoney.com/"]);
+    if (proc.returncode !== 0) {
+      throw new Error((proc.stderr || proc.stdout).slice(0, 400));
+    }
+    const w = oc(session, ["wait", "text", "条件选股", "--timeout", "20000"], 30_000);
+    if (w.returncode !== 0) throw new Error("wait 条件选股 失败");
+
+    const tabs = findRef(session, { text: "基本面" });
+    clickRef(
+      session,
+      pickRef(
+        tabs,
+        (e) =>
+          e.attrs?.id === "tab-基本面" || (e.text === "基本面" && e.role === "tab"),
+      ),
+    );
+    sleep(300);
+    setMarketCap(session);
+    const c1 = chips(session);
+    console.log(`chips_after_mkt=${JSON.stringify(c1)}`);
+    if (!c1.some((x) => x.includes("总市值>1000亿"))) {
+      throw new Error(`市值 chip 不正确: ${JSON.stringify(c1)}`);
+    }
+
+    const c2 = setDividend(session);
+    console.log(`chips_final=${JSON.stringify(c2)}`);
+    if (!hasDividendChip(c2)) {
+      throw new Error(`股息 chip 不正确: ${JSON.stringify(c2)}`);
+    }
+
+    console.log("mode=xuangu-result-dom");
+    const meta = captureResultDom(session, outPath);
+
+    writePool(poolJson, meta.pool);
+    console.log(JSON.stringify({
+      source: meta.source,
+      n: meta.n,
+      url: meta.url,
+      chips: meta.chips,
+      path: meta.path,
+      pool: poolJson,
+    }));
+    console.log(`N=${meta.n} SOURCE=${meta.source} POOL=${poolJson} FILE=${outPath}`);
+    console.log(`ALL=${meta.pool.map((p) => p.code).join(",")}`);
+    return 0;
+  } catch (exc) {
+    console.error(`error: ${exc.message || exc}`);
+    return 1;
+  }
+}
+
+process.exit(main());

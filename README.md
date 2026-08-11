@@ -1,98 +1,62 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+按「策略收益 / 落地成本」排了一版改造计划。当前最大的缺口是：**文档里写全了，脚本只实现了简化版**（尤其周期顶、估值分位、目标价中枢）。
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+---
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 优先级改造计划
 
-## Description
+### P0 — 先补齐「文档 ↔ 脚本」落差（1–2 周）
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+这些不做，日常跑出来的报告会系统性误导操作。
 
-## Project setup
+| # | 项 | 现状问题 | 改造动作 | 验收 |
+|---|---|---|---|---|
+| 1 | **估值分位真正算出来** | `score_and_report.js` 在布林未触发时直接标「估值分位」，但**没算**近 5 年股息率/PB 分位 | 用后复权价 × 分红序列算 TTM 股息率分位 + PB 分位；≥80/≤20 才允许「分批≤5%」，否则动作必须是观望 | 报告里出现真实分位数，且与动作一致 |
+| 2 | **股息隐含目标价用中枢，不用行业基准凑** | `divTargetPrice` 只用「现价×股息/行业基准」 | 优先：近 12 月 DPS ÷ 近 5 年 TTM 股息中位数；不足年限再降级到基准，并标注 | 附录每票写明分母来源 |
+| 3 | **布林目标价复权一致** | 轨是后复权，现价多半是未复权/前复权，脚本自己也写了「不可比」 | 操作参考价统一换算到同一口径（或输出「相对中轨 %」而非绝对元） | 不再出现「现价 30、中轨 180」类错位 |
+| 4 | **Step3 红线补全** | 仅有派息>100%、弱「强周期高息」提醒 | 落地：净现比连 2 年<1、FCF 连 2 年盖不住分红、亏损仍分红；银行用现有不良规则 | 踩线票强制 🔴，动作禁止建仓/持有 |
 
-```bash
-$ pnpm install
+---
+
+### P1 — 提升选股与周期质量（2–3 周）
+
+| # | 项 | 现状问题 | 改造动作 |
+|---|---|---|---|
+| 5 | **行业分类去硬编码** | `BANK`/`UTILITY`…固定名单，新人池大量掉进 G 兜底 | 用东财行业/概念字段映射 A–F；白酒单独成类（勿套公用事业阈值）；名单只作兜底 |
+| 6 | **周期位置量化（C/D）** | 只有 `cycle_caution && div>6` | 接入煤价/运价/钢价相对 5 年中位数；>1.5 观察仓、>2 禁止进今日推荐 |
+| 7 | **TTM 股息剔特别分红** | 原则有，自动化不确定 | Step0/分红 streak 统一口径：普通息 vs 特别息拆分后再算股息与连续分红 |
+| 8 | **护城河降「重复计分」** | 护城河合成里再用 ROE/FCF/派息，与独立维度双重加权 | 护城河侧重「难复制优势」客观代理（特许/份额/负债成本）；兑现只作封顶，不重复占 35% 全分 |
+
+---
+
+### P2 — 仓位与可执行性（按需）
+
+| # | 项 | 改造动作 |
+|---|---|---|
+| 9 | **组合预算引擎** | 按四条件完整度→总分→股息/国债比→央企决胜自动裁到 K≤10，并强制今日合计≤30%、现金≥20%、单票≤15% |
+| 10 | **加仓/减仓规则可机读** | 把「继续下跌可加仓≤8%」「周中轨减 1/10」写成结构化字段，避免报告自由发挥 |
+| 11 | **保险评分去重** | 偿付能力不应同时占「资产质量 25% + 资本 15%」同一数值；改第二维为保费增长/新业务价值等可抓字段或明确缺口 |
+
+---
+
+### P3 — 工程与闭环（持续）
+
+| # | 项 | 改造动作 |
+|---|---|---|
+| 12 | **抓数缓存与并行** | F10 / 三周期 K 线按 code 落盘缓存 + 有限并发；失败重试可观测 |
+| 13 | **策略复盘表** | 每次桌面报告旁落 `signals-YYYYMMDD.json`；30/90 日后对股价与分红做命中率（相对中证红利） |
+| 14 | **Step0 韧性** | 在不违反「禁止编造池」前提下：DOM 扫表失败时保留截图+列映射诊断包；xuangu API 若可稳定则双源校验条数 |
+
+---
+
+## 建议落地顺序（里程碑）
+
+```text
+M1（本周）: #1 分位 + #3 复权一致 + #4 红线补全
+M2（下周）: #2 股息中枢目标价 + #7 特别息
+M3（再下周）: #5 行业映射 + #6 周期价
+M4（有余力）: #8 护城河重构 → #9–11 仓位/保险 → #12–14 工程闭环
 ```
 
-## Compile and run the project
+**原则**：先修「会算错动作/价格」的 P0，再扩「会漏票/会进周期顶」的 P1，最后才做组合工程与回测。
 
-```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
-```
-
-## Run tests
-
-```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+你确认后我可以从 **M1（#1+#3+#4）** 直接开改；若想先动文档阈值或先动脚本，也可以说下偏好。

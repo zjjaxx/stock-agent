@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs, readJsonFile } from "./opencli_json.js";
 import { fetchBrowser } from "./fetch_kline_hfq.js";
+import { fetchValuationHistory } from "./fetch_valuation_history.js";
 
 function fnum(x) {
   if (x == null || x === "") return null;
@@ -256,7 +257,56 @@ function packDim(dim, score, w, value) {
   };
 }
 
-function scoreOne(row, f10, bands) {
+/**
+ * Step4：主路径布林；未满足/失效时走估值分位。
+ * 分批仅当真实分位达标（股息率分位≥80；无股息分位时 PB≤20），否则观望。
+ */
+function decideSignalAction(rating, bands, valuation) {
+  const bd = bands?.D;
+  const bw = bands?.W;
+  const bm = bands?.M;
+  const bollReady = Boolean(bd && bw && bm);
+  const bwOk = bollReady && (bd.bandwidth_pct || 0) >= 5;
+  const bollFailReason = !bollReady
+    ? "K线不足"
+    : (bd.bandwidth_pct || 0) < 5
+      ? "带宽<5%"
+      : null;
+
+  if (rating === "🔴") {
+    return { signal: bwOk ? "布林带" : "—", action: "回避新建仓" };
+  }
+  if (rating === "🟠") {
+    return { signal: "—", action: "观察" };
+  }
+
+  // 🟢 / 🟡
+  if (bwOk) {
+    const ideal =
+      bm.close <= bm.mid &&
+      bw.close <= bw.mid - (bw.mid - bw.lower) * 0.3 &&
+      bd.close <= bd.mid - (bd.mid - bd.lower) * 0.3;
+    if (rating === "🟢" && ideal) {
+      return { signal: "布林带", action: "建仓" };
+    }
+    return valuationSecondary(valuation, "技术位未满足");
+  }
+
+  return valuationSecondary(valuation, bollFailReason || "布林失效");
+}
+
+function valuationSecondary(valuation, reason) {
+  const signal = `估值分位（${reason}）`;
+  if (!valuation || valuation.fetch_ok === false) {
+    return { signal, action: "观望" };
+  }
+  if (valuation.allow_batch) {
+    return { signal, action: "分批建仓" };
+  }
+  return { signal, action: "观望" };
+}
+
+function scoreOne(row, f10, bands, valuation = null) {
   const cls = row.ind_class || "G";
   const finKind = f10.special?.kind || (cls === "E" ? null : "corp");
   const isBankLike = cls === "E";
@@ -431,34 +481,23 @@ function scoreOne(row, f10, bands) {
   else if (total >= 60) rating = "🟠";
   else rating = "🔴";
 
-  const bd = bands.D;
   const bw = bands.W;
   const bm = bands.M;
-  let signal = "估值分位";
+  let signal = "—";
   let action = "观望";
   if (!scoreComplete) {
     signal = "—";
     action = "数据缺口，暂停评级";
-  } else if (bd && bw && bm && (bd.bandwidth_pct || 0) >= 5) {
-    signal = "布林带";
-    const ideal =
-      bm.close <= bm.mid &&
-      bw.close <= bw.mid - (bw.mid - bw.lower) * 0.3 &&
-      bd.close <= bd.mid - (bd.mid - bd.lower) * 0.3;
-    if (rating === "🟢" && ideal) action = "建仓";
-    else if (rating === "🟢" || rating === "🟡") {
-      action = "分批/观望";
-      signal = "估值分位（技术位未满足）";
-    } else {
-      action = rating !== "🔴" ? "持有/观察" : "回避新建仓";
-    }
   } else {
-    action =
-      rating === "🟢" || rating === "🟡"
-        ? "分批/观望"
-        : rating === "🔴"
-          ? "回避新建仓"
-          : "观察";
+    ({ signal, action } = decideSignalAction(rating, bands, valuation));
+  }
+
+  if (
+    valuation &&
+    valuation.fetch_ok === false &&
+    String(signal).includes("估值分位")
+  ) {
+    gaps.push("估值分位序列缺失");
   }
 
   const ent = entType(f10.controller, f10.holder, f10.org_form);
@@ -482,6 +521,7 @@ function scoreOne(row, f10, bands) {
     fcf_cov: f10.fcf_cov,
     special: f10.special,
     bands,
+    valuation,
     weights,
     total,
     score_complete: scoreComplete,
@@ -594,11 +634,29 @@ function main() {
       (b.total ?? -1) - (a.total ?? -1) ||
       (b.div || 0) - (a.div || 0),
   );
+  const valSession = args.valSession || args["val-session"] || "buffett-valuation";
   for (const r of ranked.slice(0, maxKline)) {
-    console.log(`kline ${r.code} ${r.name} ...`);
+    console.log(`kline+val ${r.code} ${r.name} ...`);
     const bands = fetchBands(r.code, r.market || "SH", args.session);
+    let valuation = null;
+    try {
+      valuation = fetchValuationHistory(r.code, r.market || "SH", {
+        session: valSession,
+      });
+      console.log(
+        `  val divP${valuation.div_pctile ?? "—"} pbP${valuation.pb_pctile ?? "—"} ` +
+          `batch=${valuation.allow_batch} ok=${valuation.fetch_ok}`,
+      );
+    } catch (exc) {
+      valuation = {
+        fetch_ok: false,
+        allow_batch: false,
+        error: String(exc.message || exc),
+      };
+      console.log(`  val error: ${valuation.error}`);
+    }
     const f10 = f10By[r.code] || { fetch_ok: false };
-    Object.assign(r, scoreOne(r, f10, bands));
+    Object.assign(r, scoreOne(r, f10, bands, valuation));
   }
 
   /** 今日排队：四条件完整度 → 总分 → 股息/国债比 → 仅同分时央国企先 */
@@ -669,6 +727,9 @@ function main() {
   L(`- 国债：${bond.source} = **${bondY}%**（${bond.fetched_at}）`);
   L("- K线：`fetch_kline_hfq.js`（push2his fqt=2 / adapter）+ 布林自算");
   L(
+    "- 估值分位：`fetch_valuation_history.js`（RPT_VALUEANALYSIS_DET×DIVIDEND_MAIN；股息率分位≥80或PB≤20才分批≤5%）",
+  );
+  L(
     "- 目标价：`(现价×TTM股息率)÷行业基准股息率`（无近5年股息中位数时用行业基准作分母）",
   );
   L("");
@@ -683,9 +744,9 @@ function main() {
   L("|---|---|---|---|---|---|---|---|");
   for (const r of today) {
     const posHint =
-      r.action.includes("分批") || r.signal.includes("估值分位")
+      r.action.includes("分批建仓")
         ? "≤5%分批"
-        : r.action.includes("建仓")
+        : r.action === "建仓"
           ? "≤15%"
           : "—";
     L(
@@ -714,6 +775,19 @@ function main() {
     L(
       `- 技术：日 ${bandLine(r.bands?.D)}；周 ${bandLine(r.bands?.W)}；月 ${bandLine(r.bands?.M)}`,
     );
+    {
+      const v = r.valuation;
+      if (v?.fetch_ok) {
+        L(
+          `- 估值分位：股息率分位 ${fmt(v.div_pctile, 1)}（TTM ${fmt(v.div_yield_now)}%，${v.div_zone || "—"}）` +
+            ` | PB分位 ${fmt(v.pb_pctile, 1)}（PB ${fmt(v.pb_now, 3)}，${v.pb_zone || "—"}）` +
+            ` | 样本 ${v.sample_n}日/~${fmt(v.years, 1)}年` +
+            (v.years_note ? `（${v.years_note}）` : ""),
+        );
+      } else if (String(r.signal).includes("估值分位")) {
+        L(`- 估值分位：缺失（${v?.error || "未抓取"}）→ 动作强制观望`);
+      }
+    }
     L(
       `- **目标价 ${fmt(r.target_price)}**（每股分红≈${fmt((r.price || 0) * (r.div || 0) / 100, 3)} ÷ 行业基准 ${fmt(r.target_mid_yield)}%）`,
     );
@@ -721,7 +795,7 @@ function main() {
     L(`**操作**：${r.action}（${r.signal}）`);
     L("");
     L(
-      "**巴菲特视角**：优先看护城河与分红可持续；未到多周期下轨共振前，只用估值分位小步试探。",
+      "**巴菲特视角**：优先看护城河与分红可持续；未到多周期下轨共振前，仅股息率分位≥80（或无股息分位时PB≤20）才分批≤5%。",
     );
     L("");
     L("**主要风险**：行业景气/政策；派息与 ROE 回落；技术位未到时过早加仓。");
@@ -750,6 +824,12 @@ function main() {
     L(
       `派息 ${fmt(r.pay_ratio)}% | ROE3 ${fmt(r.roe3)}% | 实控人 ${r.controller || "—"}`,
     );
+    if (r.valuation?.fetch_ok) {
+      L(
+        `估值分位：股息率 ${fmt(r.valuation.div_pctile, 1)} | PB ${fmt(r.valuation.pb_pctile, 1)}` +
+          ` | allow_batch=${r.valuation.allow_batch}`,
+      );
+    }
     if (r.special?.kind) {
       const y0 = (r.special.years || [])[0] || {};
       L(

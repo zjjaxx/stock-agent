@@ -292,6 +292,28 @@ node ../scripts/calc_bollinger.js /tmp/600900_month.json --period M
 
 验收样例（2026-08-07）：日线 `sample_count=520`，`bandwidth_pct≈6.21`；周/月亦可算通。
 
+### C2. 估值分位（近 5 年 TTM 股息率 + PB；Step 4.3）
+
+技术位未满足 / 布林失效时，才允许用估值分位做**少量**布局。脚本：[`scripts/fetch_valuation_history.js`](../scripts/fetch_valuation_history.js)。
+
+| 序列 | 来源 | 算法 |
+|---|---|---|
+| 日频收盘 / PB | `RPT_VALUEANALYSIS_DET`（datacenter-web）`CLOSE_PRICE` / `PB_MRQ` | 近 5 年（pageSize≈1400） |
+| 现金分红事件 | `RPT_F10_DIVIDEND_MAIN`：除权日 + 解析「10派X元」 | 方案文案含「特别/特殊」跳过 |
+| TTM 股息率 | 过去 365 日每股现金分红合计 ÷ 当日 `CLOSE_PRICE` | 对全样本算分位 |
+| PB 分位 | 当日 `PB_MRQ` 在近 5 年 PB 序列中的分位 | 交叉验证 |
+
+**允许「分批≤5%」硬条件**（冲突以股息率分位为准）：
+- 有股息率分位 → **≥80** 才允许分批；否则动作必须是**观望**
+- 无股息率分位、仅有 PB → **PB 分位 ≤20** 才允许分批
+
+```bash
+node ../scripts/fetch_valuation_history.js 600900.SH -o /tmp/600900_val.json
+# 字段：div_pctile / pb_pctile / allow_batch / div_yield_now / pb_now / years
+```
+
+报告必填：股息率分位 / PB 分位；禁止未计算就写「估值分位」并给分批仓位。
+
 ### D. 10 年期国债收益率（Step 1 股息/国债比）
 
 东财宏观页 `https://data.eastmoney.com/cjsj/zgzmcbysyl.html` **browser 实跑常废页**（标题 `undefined`、正文几乎无收益率；`--filter EM_BOND` 也滤空）。**不要再把它当默认固化源**。
@@ -319,6 +341,8 @@ Step 1 硬门槛 `TTM股息率 / 10Y国债收益率 > 1.5` 使用此值；禁止
 | F10 资料 | `https://emweb.securities.eastmoney.com/PC_HSF10/pages/index.html?type=web&code={SH\|SZ\|BJ}{code}` + `#/fhrz`/`#/gsgk`/`#/cwfx` |
 | 后复权 K 线（优先） | `opencli eastmoney kline <code> --adjust backward` |
 | 后复权 K 线（备援） | browser 直开 `push2his.../kline/get?...&fqt=2&klt={101\|102\|103}&lmt=...` |
+| **估值分位（Step 4.3）** | `node scripts/fetch_valuation_history.js`：`RPT_VALUEANALYSIS_DET` + `DIVIDEND_MAIN` |
+| 估值分析页（人工核） | `https://data.eastmoney.com/gzfx/detail/{code}.html` |
 | 10Y 国债收益率（默认） | Investing：`https://cn.investing.com/rates-bonds/china-10-year-bond-yield` |
 | 东财国债页（易废页） | `https://data.eastmoney.com/cjsj/zgzmcbysyl.html`（**非默认**；废页跳过） |
 | 分红配送榜 | `https://data.eastmoney.com/yjfp/`（**不是 Step 0 回退**） |
@@ -342,6 +366,7 @@ Step 1 硬门槛 `TTM股息率 / 10Y国债收益率 > 1.5` 使用此值；禁止
 | 保险专项（偿付/投资收益） | `MAINFINADATA`：`SOLVENCY_AR` / `NET_ROI`；E类保险用保险专用表 |
 | 企业性质 | `ORG_BASICINFO.REAL_CONTROLER`（主）+ `CONTROL_HOLDER` / `ORG_FORM`；概念标签≠终审 |
 | 连续分红年限 | `DIVIDEND_MAIN` 历史表按年去重计数 |
+| 估值分位（股息率/PB） | `fetch_valuation_history.js`：`VALUEANALYSIS_DET`×`DIVIDEND_MAIN`；分批仅股息率分位≥80（或无股息分位时PB≤20） |
 | 布林带 | `kline --adjust backward` 或 `push2his fqt=2` + `calc_bollinger.js` |
 | 10Y 国债收益率 | Investing 中国 10Y（默认）；用户粘贴（备选）；东财国债页仅非废页时 |
 

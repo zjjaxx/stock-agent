@@ -7,6 +7,10 @@
  * 用法:
  *   node run_step0_xuangu.js -o /tmp/buffett_xuangu_result.json
  *   node run_step0_xuangu.js --session buffett-xg-demo --pool-json /tmp/buffett_pool.json
+ *   node run_step0_xuangu.js --bond-json /tmp/buffett_bond.json
+ *   node run_step0_xuangu.js --bond 1.70
+ *
+ * 股息下限 = 中国10Y国债 × 2（无 --bond / --bond-json 时先抓 Investing）。
  */
 
 import fs from "node:fs";
@@ -15,8 +19,10 @@ import {
   parseArgs,
   parseJsonText,
   parseYiNumber,
+  readJsonFile,
   runOpencli,
 } from "./opencli_json.js";
+import { fetchBondYield, step0DivFloor } from "./fetch_bond_yield.js";
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -79,6 +85,9 @@ function fillVerified(session, ref, expected, { retries = 3 } = {}) {
     sleep(200);
     last = getValue(session, ref);
     if (last === want) return last;
+    if (want !== "" && Number(last) === Number(want) && Number.isFinite(Number(want))) {
+      return last;
+    }
     // 偶发尾零/空：清空再填一次
     sleep(150);
   }
@@ -102,8 +111,29 @@ function chips(session) {
   return parseJsonText(raw);
 }
 
-function hasDividendChip(chipList) {
-  return (chipList || []).some((x) => String(x).includes("最新股息率3.5%-100%"));
+function hasDividendChip(chipList, loStr) {
+  const want = Number(loStr);
+  return (chipList || []).some((x) => {
+    const s = String(x).replace(/\s/g, "");
+    const m = s.match(/最新股息率([\d.]+)%-100%/);
+    if (!m || !Number.isFinite(want)) return false;
+    return Math.abs(Number(m[1]) - want) < 0.051;
+  });
+}
+
+function resolveBond(args) {
+  const bondFile = args.bondJson || args["bond-json"];
+  if (bondFile) {
+    const data = readJsonFile(bondFile);
+    if (data?.yield_pct == null) throw new Error("bond JSON 缺少 yield_pct");
+    return data;
+  }
+  if (args.bond != null && args.bond !== "") {
+    const y = Number(args.bond);
+    if (!Number.isFinite(y) || y <= 0) throw new Error(`无效 --bond: ${args.bond}`);
+    return { yield_pct: y, source: "cli --bond", fetched_at: new Date().toISOString() };
+  }
+  return fetchBondYield({ session: args.bondSession || args["bond-session"] || "buffett-bond" });
 }
 
 function dismissPopover(session) {
@@ -135,10 +165,10 @@ function setMarketCap(session) {
 }
 
 /**
- * 自定义股息区间 3.5–100%。
- * 历史事故：只 fill 不验值、立刻点确定 → chip 不出现或变成 3.5%-5%。
+ * 自定义股息区间 [国债×2, 100]。
+ * 历史事故：只 fill 不验值、立刻点确定 → chip 不出现或上限被默认成 5。
  */
-function setDividend(session, { attempts = 3 } = {}) {
+function setDividend(session, loStr, { attempts = 3 } = {}) {
   let lastErr = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
@@ -150,25 +180,25 @@ function setDividend(session, { attempts = 3 } = {}) {
       if (inputs.length < 2) {
         throw new Error(`股息率自定义输入框不足 2 个（got ${inputs.length}）`);
       }
-      const lo = fillVerified(session, inputs[0].ref, "3.5");
+      const lo = fillVerified(session, inputs[0].ref, loStr);
       sleep(150);
       const hi = fillVerified(session, inputs[1].ref, "100");
       // 点确定前再读一次，防止第二次 fill 冲掉第一次
       const lo2 = getValue(session, inputs[0].ref);
       const hi2 = getValue(session, inputs[1].ref);
-      if (lo2 !== "3.5" || hi2 !== "100") {
-        throw new Error(`确定前复检失败 lo=${lo2}/${lo} hi=${hi2}/${hi}`);
+      if ((lo2 !== loStr && Number(lo2) !== Number(loStr)) || hi2 !== "100") {
+        throw new Error(`确定前复检失败 lo=${lo2}/${lo} hi=${hi2}/${hi} want=${loStr}`);
       }
       const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
       if (!btns.length) throw new Error("股息弹层找不到确定按钮");
       clickRef(session, Number(btns[0].ref));
       sleep(450);
       const chipList = chips(session);
-      if (hasDividendChip(chipList)) {
+      if (hasDividendChip(chipList, loStr)) {
         if (attempt > 1) console.log(`setDividend ok on attempt=${attempt}`);
         return chipList;
       }
-      throw new Error(`股息 chip 未落地: ${JSON.stringify(chipList)}`);
+      throw new Error(`股息 chip 未落地 want=${loStr}: ${JSON.stringify(chipList)}`);
     } catch (exc) {
       lastErr = exc;
       console.log(`setDividend attempt ${attempt}/${attempts} failed: ${exc.message || exc}`);
@@ -338,7 +368,7 @@ function scrapeResultDom(session) {
   };
 }
 
-function captureResultDom(session, outPath) {
+function captureResultDom(session, outPath, extra = {}) {
   // 若还在编辑页，点去选股
   if (!currentUrl(session).includes("/Result")) {
     clickGoSelect(session);
@@ -349,6 +379,7 @@ function captureResultDom(session, outPath) {
     ...scraped,
     chips: chips(session),
     fetched_at: new Date().toISOString(),
+    ...extra,
   };
   fs.writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return {
@@ -362,10 +393,10 @@ function captureResultDom(session, outPath) {
   };
 }
 
-function writePool(poolJson, pool) {
+function writePool(poolJson, pool, extra = {}) {
   fs.writeFileSync(
     poolJson,
-    `${JSON.stringify({ n: pool.length, pool, source_note: "step0-xuangu-result-dom" }, null, 2)}\n`,
+    `${JSON.stringify({ n: pool.length, pool, source_note: "step0-xuangu-result-dom", ...extra }, null, 2)}\n`,
     "utf8",
   );
 }
@@ -382,13 +413,24 @@ function main() {
       session: `buffett-xg-${hhmmss}`,
       output: "/tmp/buffett_xuangu_result.json",
       poolJson: "/tmp/buffett_pool.json",
+      bondOut: "/tmp/buffett_bond.json",
     },
   });
   const session = args.session;
   const outPath = args.output;
   const poolJson = args.poolJson || args["pool-json"];
+  const bondOut = args.bondOut || args["bond-out"];
 
   try {
+    const bond = resolveBond(args);
+    const floor = step0DivFloor(bond.yield_pct);
+    if (bondOut) {
+      fs.writeFileSync(bondOut, `${JSON.stringify(bond, null, 2)}\n`, "utf8");
+    }
+    console.log(
+      `bond=${floor.bond}% floor=${floor.loStr}% (国债×2) source=${bond.source || "—"}`,
+    );
+
     console.log(`session=${session}`);
     const proc = oc(session, ["open", "https://xuangu.eastmoney.com/"]);
     if (proc.returncode !== 0) {
@@ -414,16 +456,23 @@ function main() {
       throw new Error(`市值 chip 不正确: ${JSON.stringify(c1)}`);
     }
 
-    const c2 = setDividend(session);
+    const c2 = setDividend(session, floor.loStr);
     console.log(`chips_final=${JSON.stringify(c2)}`);
-    if (!hasDividendChip(c2)) {
-      throw new Error(`股息 chip 不正确: ${JSON.stringify(c2)}`);
+    if (!hasDividendChip(c2, floor.loStr)) {
+      throw new Error(`股息 chip 不正确 want=${floor.loStr}: ${JSON.stringify(c2)}`);
     }
 
     console.log("mode=xuangu-result-dom");
-    const meta = captureResultDom(session, outPath);
+    const bondMeta = {
+      bond_yield_pct: floor.bond,
+      div_floor_pct: floor.lo,
+      div_floor_exact: floor.exact,
+      bond_source: bond.source || null,
+      bond_fetched_at: bond.fetched_at || null,
+    };
+    const meta = captureResultDom(session, outPath, bondMeta);
 
-    writePool(poolJson, meta.pool);
+    writePool(poolJson, meta.pool, bondMeta);
     console.log(JSON.stringify({
       source: meta.source,
       n: meta.n,
@@ -431,6 +480,8 @@ function main() {
       chips: meta.chips,
       path: meta.path,
       pool: poolJson,
+      bond: bondOut,
+      ...bondMeta,
     }));
     console.log(`N=${meta.n} SOURCE=${meta.source} POOL=${poolJson} FILE=${outPath}`);
     console.log(`ALL=${meta.pool.map((p) => p.code).join(",")}`);

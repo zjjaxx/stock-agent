@@ -134,7 +134,6 @@ function main() {
       try {
         const ratio = Number(item.div) / Number(args.bond);
         row.bond_ratio = ratio;
-        row.pass_bond = ratio > 1.5;
       } catch {
         /* ignore */
       }

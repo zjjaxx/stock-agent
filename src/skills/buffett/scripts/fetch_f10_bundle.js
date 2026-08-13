@@ -317,6 +317,25 @@ function buildBundle(code, market, session) {
   const roe3 = roeVals.length ? roeVals.reduce((a, b) => a + b, 0) / roeVals.length : null;
   const debt = dupA.length ? fnum(dupA[0].DEBT_ASSET_RATIO) : null;
 
+  const profitByYear = {};
+  const ncoByYear = {};
+  for (const row of dupA) {
+    const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    if (!m) continue;
+    const pn = fnum(row.PARENT_NETPROFIT);
+    if (pn != null) profitByYear[m[1]] = pn;
+  }
+  for (const row of finaA) {
+    const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    if (!m) continue;
+    const nco = fnum(row.NCO_NETPROFIT);
+    if (nco != null) ncoByYear[m[1]] = nco;
+    if (profitByYear[m[1]] == null) {
+      const pn = fnum(row.PARENTNETPROFIT);
+      if (pn != null) profitByYear[m[1]] = pn;
+    }
+  }
+
   const fcfCov = [];
   for (const yrRow of cashA.slice(0, 2)) {
     const ocf = fnum(yrRow.NETCASH_OPERATE);
@@ -331,7 +350,14 @@ function buildBundle(code, market, session) {
         break;
       }
     }
-    const item = { year, ocf, capex, div: divAmt };
+    const item = {
+      year,
+      ocf,
+      capex,
+      div: divAmt,
+      profit: year ? profitByYear[year] ?? null : null,
+      nco: year ? ncoByYear[year] ?? null : null,
+    };
     if (ocf != null && capex != null && divAmt) {
       const fcf = ocf - capex;
       item.fcf = fcf;
@@ -366,6 +392,14 @@ function buildBundle(code, market, session) {
     controller: org0.REAL_CONTROLER,
     holder: org0.CONTROL_HOLDER,
     org_form: org0.ORG_FORM,
+    industry: {
+      l1: org0.BOARD_NAME_1LEVEL || null,
+      l2: org0.BOARD_NAME_2LEVEL || null,
+      l3: org0.BOARD_NAME_3LEVEL || null,
+      em2016: org0.EM2016 || null,
+      csrc: org0.CSRC_INDUSTRY_NAME || null,
+    },
+    latest_profit: fcfPatched[0]?.profit ?? null,
     roe3,
     roe_vals: roeVals,
     debt,

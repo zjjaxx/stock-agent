@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 拉取 A 股后复权 K 线（buffett Step 4；必须 fqt=2）。
+ * 拉取 A 股后复权 K 线（buffett Step 3；必须 fqt=2）。
  *
  * 优先级：
  *   1) opencli eastmoney kline --adjust backward

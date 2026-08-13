@@ -1,44 +1,23 @@
 #!/usr/bin/env node
 /**
- * Step 1 硬门槛初筛（市值 / 股息行业基准 / 连续分红 / 国债比）。
+ * Step 1 硬门槛初筛（连续分红 / 股息缺失）。
+ * 市值只在 Step 0 召回（>1000亿），此处不再剔除。
+ * 行业来自东财 f100（fetch_industry.js），写入结果供 Step2 事实卡画像参考。
+ * 股息相对国债的召回只在 Step 0（≥ 国债×2）；此处只算 bond_ratio 供排序展示。
  *
  * 用法:
  *   node step1_hard_filter.js \
  *     --pool /tmp/buffett_pool.json \
  *     --streak /tmp/buffett_step1_div.json \
  *     --bond 1.701 \
+ *     [--industry /tmp/buffett_industry.json] \
  *     -o /tmp/buffett_step1.json
  */
 
 import fs from "node:fs";
 import { parseArgs, readJsonFile } from "./opencli_json.js";
-
-const BANK = new Set([
-  "601288", "601398", "601939", "601988", "601328", "601166", "600036", "601818",
-  "600000", "600016", "601229", "601169", "600015", "601998", "601658", "600919",
-  "600926", "002142",
-]);
-const OPERATOR = new Set(["600941", "601728", "600050"]);
-const UTILITY = new Set(["600900", "600886", "600011"]);
-const ENERGY = new Set(["601088", "601225", "601857", "600028", "600938"]);
-const CYCLE = new Set(["601919", "600018", "600019"]);
-const CONSTRUCT = new Set(["601668", "601390"]);
-const INSURANCE = new Set(["601318", "601601", "601336"]);
-const LIQUOR = new Set(["600519", "000858", "000568", "600809"]);
-
-function industry(code, name) {
-  if (BANK.has(code) || name.includes("银行")) return ["E", "银行", 4.5];
-  if (OPERATOR.has(code)) return ["B", "运营商", 4.0];
-  if (UTILITY.has(code) || name.includes("电力")) return ["A", "公用事业", 3.5];
-  if (ENERGY.has(code) || name.includes("煤炭") || name.includes("石油")) {
-    return ["C", "能源混合", 4.5];
-  }
-  if (CYCLE.has(code)) return ["D", "强周期", 5.5];
-  if (CONSTRUCT.has(code) || name.includes("建筑")) return ["F", "建筑交运", 4.0];
-  if (INSURANCE.has(code)) return ["E", "保险", 4.5];
-  if (LIQUOR.has(code) || name.includes("酒")) return ["A", "白酒(公用档软参)", 3.5];
-  return ["G", "通用兜底", 4.5];
-}
+import { fetchIndustryForPool } from "./fetch_industry.js";
+import { CLASS_META, classifyIndustry } from "./industry_map.js";
 
 function loadList(path) {
   const data = readJsonFile(path);
@@ -59,28 +38,62 @@ function bondPct(argsBond, bondFile) {
   return Number(argsBond);
 }
 
+function industryByCode(pathOrNull, pool, session) {
+  if (pathOrNull) {
+    const rows = loadList(pathOrNull);
+    return Object.fromEntries(rows.filter((r) => r.code).map((r) => [String(r.code), r]));
+  }
+  const rows = fetchIndustryForPool(pool, { session });
+  return Object.fromEntries(rows.filter((r) => r.code).map((r) => [String(r.code), r]));
+}
+
+function mapRow(indRow) {
+  if (indRow?.cls && CLASS_META[indRow.cls]) {
+    return {
+      cls: indRow.cls,
+      ind_name: indRow.ind_name || CLASS_META[indRow.cls].name,
+      cycle_caution: Boolean(indRow.cycle_caution),
+      unmapped: Boolean(indRow.unmapped),
+      f100: indRow.f100 || indRow.industry || "",
+      industry_source: indRow.source || "eastmoney-ulist-f100",
+    };
+  }
+  const mapped = classifyIndustry({ f100: indRow?.f100 || indRow?.industry });
+  return {
+    cls: mapped.cls,
+    ind_name: mapped.ind_name,
+    cycle_caution: mapped.cycle_caution,
+    unmapped: mapped.unmapped,
+    f100: mapped.industry || "",
+    industry_source: indRow?.source || "classify",
+  };
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2), {
-    defaults: { minMktYi: "1000" },
+    defaults: { session: "buffett-industry" },
   });
   if (!args.pool || !args.streak) {
-    console.error("usage: node step1_hard_filter.js --pool PATH --streak PATH --bond N [-o PATH]");
+    console.error(
+      "usage: node step1_hard_filter.js --pool PATH --streak PATH --bond N [--industry PATH] [-o PATH]",
+    );
     return 1;
   }
 
   let pool;
   let streakRows;
   let bond;
+  let indBy;
   try {
     pool = loadList(args.pool);
     streakRows = loadList(args.streak);
     bond = bondPct(args.bond, args.bondJson || args["bond-json"]);
+    indBy = industryByCode(args.industry, pool, args.session);
   } catch (exc) {
     console.error(`error: ${exc.message || exc}`);
     return 1;
   }
 
-  const minMktYi = Number(args.minMktYi || args["min-mkt-yi"] || 1000);
   const streakBy = Object.fromEntries(
     streakRows.filter((r) => r.code).map((r) => [String(r.code), r]),
   );
@@ -89,19 +102,15 @@ function main() {
 
   for (const row of pool) {
     const code = String(row.code || "");
-    const name = String(row.name || "");
-    const [cls, iname, base] = industry(code, name);
+    const mapped = mapRow(indBy[code]);
     const st = streakBy[code] || {};
     const div = row.div;
-    const mktYi = row.mkt_yi;
     const reasons = [];
-    if (mktYi == null || Number(mktYi) < minMktYi) reasons.push("市值");
-    if (div == null || Number(div) < base) reasons.push(`股息<${base}`);
+    if (div == null) reasons.push("股息缺失");
     if (!st.pass_div_years) reasons.push(`连续分红${st.div_streak ?? 0}`);
     let ratio = null;
     if (div != null && bond > 0) {
       ratio = Number(div) / bond;
-      if (ratio <= 1.5) reasons.push("国债比");
     }
     const item = {
       ...row,
@@ -109,13 +118,14 @@ function main() {
       div_years: st.div_years,
       pass_div_years: st.pass_div_years,
       fetch_ok: st.fetch_ok,
-      ind_class: cls,
-      ind_name: iname,
-      base_div: base,
+      ind_class: mapped.cls,
+      ind_name: mapped.ind_name,
+      f100: mapped.f100,
+      industry_source: mapped.industry_source,
+      ind_unmapped: mapped.unmapped,
       bond_yield_pct: bond,
       bond_ratio: ratio,
-      pass_bond: Boolean(ratio && ratio > 1.5),
-      cycle_caution: cls === "D",
+      cycle_caution: mapped.cycle_caution,
     };
     if (reasons.length) {
       item.reject_reasons = reasons;
@@ -130,12 +140,15 @@ function main() {
     n_pool: pool.length,
     n_pass: passed.length,
     n_reject: rejected.length,
+    n_unmapped: [...passed, ...rejected].filter((r) => r.ind_unmapped).length,
     pass: passed,
     reject: rejected,
   };
   const text = JSON.stringify(out, null, 2);
   if (args.output) fs.writeFileSync(args.output, `${text}\n`, "utf8");
-  console.log(`N=${pool.length} pass=${passed.length} reject=${rejected.length} bond=${bond}`);
+  console.log(
+    `N=${pool.length} pass=${passed.length} reject=${rejected.length} bond=${bond} unmapped=${out.n_unmapped}`,
+  );
   if (!args.output) console.log(text);
   return 0;
 }

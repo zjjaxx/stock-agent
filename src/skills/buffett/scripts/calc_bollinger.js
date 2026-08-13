@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 用后复权收盘价计算布林带（供 buffett Step 4）。
+ * 用后复权收盘价计算布林带（供 buffett Step 3）。
  *
  * 默认参数与 SKILL.md 一致：
  *   - 日线/周线：20 期，2 倍标准差

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 近 5 年估值序列 → TTM 股息率分位 + PB 分位（buffett Step 4.3）。
+ * 近 5 年估值序列 → TTM 股息率分位 + PB 分位（buffett Step 3.3）。
  *
  * 数据：
  *   1) RPT_VALUEANALYSIS_DET：日频 CLOSE_PRICE / PB_MRQ（未复权收盘口，配现金分红）
@@ -67,6 +67,13 @@ function parseDpsPerShare(plan) {
 function isSpecialDividend(plan) {
   const t = String(plan || "");
   return t.includes("特别") || t.includes("特殊");
+}
+
+function median(arr) {
+  if (!arr?.length) return null;
+  const s = [...arr].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 /** 分位：历史中严格小于当前值的占比 ×100（0=历史最低，100≈历史最高） */
@@ -229,6 +236,7 @@ export function computeValuationStats(dailyRaw, events, { skippedSpecial = 0 } =
     asof: last?.date || null,
     close: last?.close ?? null,
     div_yield_now: divYieldNow != null ? round(divYieldNow, 2) : null,
+    div_yield_median: yieldSeries.length ? round(median(yieldSeries), 2) : null,
     pb_now: pbNow != null ? round(pbNow, 3) : null,
     div_pctile,
     pb_pctile,

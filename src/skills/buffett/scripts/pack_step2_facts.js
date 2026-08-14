@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Step 2 事实卡：合并 Step1 pass + F10/分红包，供 Agent 打分。
- * 不计算六维得分、不给 🟢/🟡、不写桌面终报。
+ * Step 2 事实卡：合并 Step1 pass + F10/分红包，并打数字维建议分。
+ * 护城河、红线定评、今日推荐、桌面终报仍由 Agent 写。
  *
  * 用法:
  *   node pack_step2_facts.js \
@@ -16,6 +16,7 @@ import fs from "node:fs";
 import { parseArgs, readJsonFile } from "./opencli_json.js";
 import { CLASS_META } from "./industry_map.js";
 import { collectRedFlags, fcfMagnitudeGap } from "./red_lines.js";
+import { WEIGHTS, scoreCard } from "./score_numeric.js";
 
 function fnum(x) {
   if (x == null || x === "") return null;
@@ -165,9 +166,12 @@ function buildCard(row, f10, bondY) {
     pay_fallback_reasons: f10.pay_fallback_reasons || [],
     roe3: fnum(f10.roe3),
     roe_vals: f10.roe_vals || [],
+    roe_hist: f10.roe_hist || [],
+    pay_hist: f10.pay_hist || [],
     debt: fnum(f10.debt),
     fcf_cov: f10.fcf_cov || [],
     special: f10.special || null,
+    fin_kind: finKind,
     quote: q,
     fetch_ok: f10.fetch_ok !== false,
     red_hints: redHints,
@@ -175,11 +179,68 @@ function buildCard(row, f10, bondY) {
   };
 }
 
+function previewTotal(score, moat = 80) {
+  const x = score?.moat_scenarios?.[moat];
+  if (!x || x.total == null) return "⚠️";
+  return `${x.total}${x.rating}`;
+}
+
+function dimOrder(kind) {
+  return Object.keys(WEIGHTS[kind] || WEIGHTS.corp).filter((id) => id !== "moat");
+}
+
+function renderScoreBlock(score) {
+  if (!score) return ["- 数字维评分：无"];
+  const L = [];
+  L.push(
+    `- 数字维同类组：\`${score.peer.key}\` n=${score.peer.n}${score.peer.escalated ? "（f100 不足 4 只，升到 A–G）" : ""}`,
+  );
+  L.push("");
+  L.push("| 维度 | 数值 | 分位 | 分位档 | 带宽 | 过热帽 | 建议档 | 权重 |");
+  L.push("|---|---|---|---|---|---|---|---|");
+  for (const id of dimOrder(score.kind)) {
+    const d = score.dims[id];
+    if (!d) continue;
+    const band = d.band ? `[${d.band.min},${d.band.max}] ${d.band.zone}` : "—";
+    const cap = d.overheat?.cap != null ? String(d.overheat.cap) : "—";
+    let val = "—";
+    if (d.value != null && typeof d.value === "object") {
+      val = Object.entries(d.value)
+        .map(([k, v]) => `${k}=${fmt(v)}`)
+        .join(" ");
+    } else if (d.value != null) {
+      val = fmt(d.value);
+    }
+    L.push(
+      `| ${d.label} | ${val} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.pct_bucket ?? "—"} | ${band} | ${cap} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
+    );
+  }
+  L.push(
+    `| 护城河 | — | — | — | — | — | 待 Agent | ${Math.round((score.dims.moat?.weight || 0.25) * 100)}% |`,
+  );
+  const bits = [100, 80, 50, 20, 0].map((m) => {
+    const x = score.moat_scenarios[m];
+    return x.total == null ? `${m}→⚠️` : `${m}→${x.total}${x.rating}`;
+  });
+  L.push(`- 护城河代入总分（红线未核，勿手算）：${bits.join("；")}`);
+  if (!score.numeric_ok) {
+    L.push(`- 数字维缺口：${score.missing.join("、")} → ⚠️ 暂停终评`);
+  }
+  for (const id of dimOrder(score.kind)) {
+    const d = score.dims[id];
+    if (!d?.reasons?.length) continue;
+    L.push(`  - ${d.label}：${d.reasons.join("；")}`);
+  }
+  return L;
+}
+
 function renderMd(step1, bond, cards, paths) {
   const L = [];
-  L.push(`# Buffett Step2 事实卡（供 Agent 打分）`);
+  L.push(`# Buffett Step2 事实卡（数字维已评分）`);
   L.push("");
-  L.push("> 本文件**没有**六维得分或今日推荐。脚本只摊数据；评分按 SKILL Step 2 由 Agent 完成。");
+  L.push(
+    "> 数字维按「同类分位 + 宽带宽封顶/封底 + 自身过热帽」由脚本给出建议档。护城河、红线定评、今日推荐由 Agent 写；禁止重打数字维或手算总分。",
+  );
   L.push("");
   L.push("## 池摘要");
   L.push(`- N=${step1.n_pool} → 硬门槛过 M=${step1.n_pass}（剔除 ${step1.n_reject}）`);
@@ -189,14 +250,15 @@ function renderMd(step1, bond, cards, paths) {
   L.push(`- Step1：\`${paths.step1}\``);
   L.push(`- F10：\`${paths.f10}\``);
   L.push("");
-  L.push("## 过门槛一览（无评分）");
+  L.push("## 过门槛一览（数字维建议）");
   L.push("");
-  L.push("| 代码 | 简称 | 行业类 | 股息% | 派息% | ROE3% | PB | 连续分红 | 缺口/红线提示 |");
-  L.push("|---|---|---|---|---|---|---|---|---|");
+  L.push("| 代码 | 简称 | 行业类 | 组(n) | 股息% | ROE3% | 若护城河80 | 缺口/红线提示 |");
+  L.push("|---|---|---|---|---|---|---|---|");
   for (const c of cards) {
     const warn = [...(c.data_gaps || []), ...(c.red_hints || [])].join("；") || "—";
+    const pg = c.score?.peer;
     L.push(
-      `| ${c.code} | ${c.name} | ${c.ind_class}/${c.ind_name} | ${fmt(c.div)} | ${fmt(c.pay_ratio)} | ${fmt(c.roe3)} | ${fmt(c.pb, 2)} | ${c.div_streak ?? "—"} | ${warn} |`,
+      `| ${c.code} | ${c.name} | ${c.ind_class}/${c.ind_name} | ${pg ? `${pg.key} ${pg.n}` : "—"} | ${fmt(c.div)} | ${fmt(c.roe3)} | ${previewTotal(c.score, 80)} | ${warn} |`,
     );
   }
   L.push("");
@@ -229,13 +291,24 @@ function renderMd(step1, bond, cards, paths) {
     L.push(
       `  - PROFILE ${fmt(c.pay_profile_pct)}%｜COMPRE自算 ${fmt(c.pay_calc_pct)}%｜备注 ${(c.pay_fallback_reasons || []).join(",") || "无"}`,
     );
-    L.push(`- ROE3 均 ${fmt(c.roe3)}%（各年 ${ (c.roe_vals || []).map((v) => fmt(v)).join(" / ") || "—" }）｜负债率 ${fmt(c.debt)}%`);
+    L.push(
+      `- ROE3 均 ${fmt(c.roe3)}%（近3年 ${ (c.roe_vals || []).map((v) => fmt(v)).join(" / ") || "—" }；历史 ${(c.roe_hist || []).map((r) => `${r.year || "?"}:${fmt(r.roe)}`).join(" ") || "—"}）｜负债率 ${fmt(c.debt)}%`,
+    );
+    if ((c.pay_hist || []).length) {
+      L.push(
+        `- 派息历史：${c.pay_hist.map((r) => `${r.year}:${fmt(r.pay_pct)}%`).join(" / ")}`,
+      );
+    }
     L.push("- FCF/分红（金额多为东财原单位·元，打分前看量级哨兵）：");
     for (const line of fcfLines(c.fcf_cov)) L.push(`  - ${line}`);
     L.push("- 银行/保险专项：");
     for (const line of specialLines(c.special)) L.push(`  - ${line}`);
     L.push(`- 红线机械提示（供复核，不自动定评）：${(c.red_hints || []).join("；") || "无"}`);
     L.push(`- 缺口：${(c.data_gaps || []).join("；") || "无"}`);
+    L.push("");
+    L.push("**数字维建议分**");
+    L.push("");
+    for (const line of renderScoreBlock(c.score)) L.push(line);
     L.push("");
   }
   L.push("生成时间：" + new Date().toISOString().replace(/\.\d{3}Z$/, ""));
@@ -263,6 +336,7 @@ export function main(argv = process.argv.slice(2)) {
     const f10 = f10By[String(row.code)] || { fetch_ok: false, code: row.code, error: "missing-f10" };
     return buildCard(row, f10, bondY);
   });
+  for (const c of cards) c.score = scoreCard(c, cards);
 
   const paths = { step1: args.step1, f10: args.f10, bond: args.bond };
   const md = renderMd(step1, bond, cards, paths);
@@ -279,7 +353,7 @@ export function main(argv = process.argv.slice(2)) {
   }
   console.log(`FACTS_MD=${outPath}`);
   if (jsonPath) console.log(`FACTS_JSON=${jsonPath}`);
-  console.log(`M=${cards.length} gaps=${cards.filter((c) => c.data_gaps.length).length}`);
+  console.log(`M=${cards.length} gaps=${cards.filter((c) => c.data_gaps.length).length} scored=${cards.filter((c) => c.score).length}`);
   return 0;
 }
 

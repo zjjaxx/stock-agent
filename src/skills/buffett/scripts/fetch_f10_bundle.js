@@ -57,8 +57,8 @@ function profilePayRatioToPct(raw) {
   return x;
 }
 
-/** 同年 TOTAL_DIVIDEND ÷ PARENT_NETPROFIT → 百分数；compre 按 STATISTICS_YEAR 从新到旧 */
-function payoutFromCompreDupont(compre, dupAnnual) {
+/** 同年 TOTAL_DIVIDEND ÷ PARENT_NETPROFIT 历年；compre 按 STATISTICS_YEAR 从新到旧 */
+function payoutHist(compre, dupAnnual) {
   const profitByYear = {};
   for (const row of dupAnnual) {
     const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
@@ -69,21 +69,26 @@ function payoutFromCompreDupont(compre, dupAnnual) {
   const years = [...compre].sort(
     (a, b) => Number(b.STATISTICS_YEAR) - Number(a.STATISTICS_YEAR),
   );
+  const out = [];
   for (const c of years) {
     const y = String(c.STATISTICS_YEAR || "");
     const td = fnum(c.TOTAL_DIVIDEND);
     const pn = profitByYear[y];
     if (td != null && pn != null && pn > 0) {
-      return {
+      out.push({
         pay_pct: (td / pn) * 100,
         year: y,
         source: "compre/dupont",
         total_dividend: td,
         parent_netprofit: pn,
-      };
+      });
     }
   }
-  return null;
+  return out;
+}
+
+function byDateDesc(rows, key = "REPORT_DATE") {
+  return [...rows].sort((a, b) => String(b[key] || "").localeCompare(String(a[key] || "")));
 }
 
 /** 高息却极低派息 → 视为口径错（如仅含部分分红金额） */
@@ -283,7 +288,7 @@ function buildBundle(code, market, session) {
   const sc = secucode(code, market);
   const org = fetchReport(session, "RPT_F10_ORG_BASICINFO", sc, { pageSize: 5 });
   const dup = fetchReport(session, "RPT_F10_FINANCE_DUPONT", sc, {
-    pageSize: 12,
+    pageSize: 48,
     sortColumns: "REPORT_DATE",
   });
   const cash = fetchReport(session, "RPT_F10_FINANCE_GCASHFLOW", sc, {
@@ -291,29 +296,31 @@ function buildBundle(code, market, session) {
     sortColumns: "REPORT_DATE",
   });
   const compre = fetchReport(session, "RPT_F10_DIVIDEND_COMPRE", sc, {
-    pageSize: 12,
+    pageSize: 16,
     sortColumns: "STATISTICS_YEAR",
   });
   const prof = fetchReport(session, "RPT_F10_DIVIDENDNEW_PROFILE", sc, { pageSize: 5 });
   const fina = fetchReport(session, "RPT_F10_FINANCE_MAINFINADATA", sc, {
-    pageSize: 16,
+    pageSize: 24,
     sortColumns: "REPORT_DATE",
   });
 
   const org0 = org[0] || {};
-  const dupAnnual = annualRows(dup);
-  const cashAnnual = annualRows(cash);
-  const finaAnnual = annualRows(fina);
-  const dupA = dupAnnual.length ? dupAnnual : dup.slice(0, 3);
-  const cashA = cashAnnual.length ? cashAnnual : cash.slice(0, 3);
-  const finaA = finaAnnual.length ? finaAnnual : fina.slice(0, 3);
+  const dupAnnual = byDateDesc(annualRows(dup));
+  const cashAnnual = byDateDesc(annualRows(cash));
+  const finaAnnual = byDateDesc(annualRows(fina));
+  const dupA = dupAnnual.length ? dupAnnual : byDateDesc(dup.slice(0, 12));
+  const cashA = cashAnnual.length ? cashAnnual : byDateDesc(cash.slice(0, 3));
+  const finaA = finaAnnual.length ? finaAnnual : byDateDesc(fina.slice(0, 3));
   const special = extractSpecial(finaA);
 
-  const roeVals = [];
-  for (const row of dupA.slice(0, 3)) {
+  const roeHist = [];
+  for (const row of dupA.slice(0, 10)) {
     const v = fnum(row.ROE != null ? row.ROE : row.ROEJQ);
-    if (v != null) roeVals.push(v);
+    const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    if (v != null) roeHist.push({ year: m ? m[1] : null, roe: v });
   }
+  const roeVals = roeHist.slice(0, 3).map((x) => x.roe);
   const roe3 = roeVals.length ? roeVals.reduce((a, b) => a + b, 0) / roeVals.length : null;
   const debt = dupA.length ? fnum(dupA[0].DEBT_ASSET_RATIO) : null;
 
@@ -367,7 +374,8 @@ function buildBundle(code, market, session) {
   }
 
   const divNewRaw = prof.length ? fnum(prof[0].DIVIDEND_NEWRATIO) : null;
-  const calcPay = payoutFromCompreDupont(compre, dupA);
+  const payHist = payoutHist(compre, dupA);
+  const calcPay = payHist[0] || null;
   const profPay = prof.length
     ? profilePayRatioToPct(prof[0].DIVIDEND_PAY_RATIO)
     : null;
@@ -402,6 +410,7 @@ function buildBundle(code, market, session) {
     latest_profit: fcfPatched[0]?.profit ?? null,
     roe3,
     roe_vals: roeVals,
+    roe_hist: roeHist,
     debt,
     pay_ratio: picked.pay_ratio,
     pay_ratio_source: picked.pay_ratio_source,
@@ -409,6 +418,7 @@ function buildBundle(code, market, session) {
     pay_fallback_reasons: picked.pay_fallback_reasons,
     pay_calc_pct: picked.pay_calc?.pay_pct ?? null,
     pay_profile_pct: picked.pay_profile,
+    pay_hist: payHist,
     dividend_newratio: divNewRaw,
     fcf_cov: fcfPatched,
     special,

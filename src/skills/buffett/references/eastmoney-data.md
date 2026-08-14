@@ -10,10 +10,11 @@
 | `fetch_bond_yield.js` | Investing 中国 10Y 国债收益率 |
 | `fetch_dividend_streak.js` | Step1：`DIVIDEND_MAIN` 连续年报分红年限 |
 | `fetch_industry.js` | Step1：push2 ulist `f100`（curl 优先，失败则 browser） |
-| `industry_map.js` | 行业名 → A–G 画像（`--self-test`）；不打分 |
+| `industry_map.js` | 行业名 → A–G 画像锚（`--self-test`）；带宽/打分见 `score_numeric.js` |
 | `step1_hard_filter.js` | 连续分红 / 股息缺失初筛（市值只在 Step0） |
-| `fetch_f10_bundle.js` | Step2：ORG/DUPONT/GCASHFLOW/COMPRE/PROFILE/MAINFINADATA + quote |
-| `pack_step2_facts.js` | 合并 Step1+F10 为事实卡（不打分） |
+| `fetch_f10_bundle.js` | Step2：ORG/DUPONT/GCASHFLOW/COMPRE/PROFILE/MAINFINADATA + quote；含 ROE/派息历史 |
+| `pack_step2_facts.js` | 合并 Step1+F10 为事实卡，并写入数字维建议分 |
+| `score_numeric.js` | 同类分位 + 宽带宽 + 自身过热帽（`--self-test`）；不打护城河 |
 | `red_lines.js` | Step2 红线机械提示（`--self-test`） |
 | `fetch_kline_hfq.js` | Step3：后复权 K 线（adapter 优先，失败则 `push2his fqt=2`） |
 | `calc_bollinger.js` | Step3：后复权收盘算布林 |
@@ -37,7 +38,7 @@ node $S/fetch_f10_bundle.js --pool /tmp/buffett_pass_pool.json -o /tmp/buffett_f
 node $S/pack_step2_facts.js \
   --step1 /tmp/buffett_step1.json --f10 /tmp/buffett_f10.json --bond /tmp/buffett_bond.json \
   -o /tmp/buffett_step2_facts.md --json /tmp/buffett_step2_facts.json
-# Agent 按 SKILL Step 2 打分+复核红线；K 线只对 🟢/🟡 再抓
+# Agent 打护城河 + 复核红线（查事实卡「护城河代入总分」）；K 线只对 🟢/🟡 再抓
 ```
 
 ## Step 0

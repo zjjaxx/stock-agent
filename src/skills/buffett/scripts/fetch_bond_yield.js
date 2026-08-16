@@ -4,7 +4,7 @@
  *
  * 用法:
  *   node fetch_bond_yield.js
- *   node fetch_bond_yield.js -o /tmp/bond.json
+ *   node fetch_bond_yield.js -o tmp/bond.json
  */
 
 import fs from "node:fs";

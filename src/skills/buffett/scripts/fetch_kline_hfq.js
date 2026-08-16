@@ -7,7 +7,7 @@
  *   2) browser 直开 push2his URL（显式 fqt=2）
  *
  * 用法:
- *   node fetch_kline_hfq.js 600900 --market SH --period day -o /tmp/600900_day.json
+ *   node fetch_kline_hfq.js 600900 --market SH --period day -o tmp/600900_day.json
  *   node fetch_kline_hfq.js 000651.SZ --period week --limit 80
  *   node fetch_kline_hfq.js 600900 --browser-only
  */

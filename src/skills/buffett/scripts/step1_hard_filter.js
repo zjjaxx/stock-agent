@@ -7,11 +7,12 @@
  *
  * 用法:
  *   node step1_hard_filter.js \
- *     --pool /tmp/buffett_pool.json \
- *     --streak /tmp/buffett_step1_div.json \
+ *     --pool tmp/buffett_pool.json \
+ *     --streak tmp/buffett_step1_div.json \
  *     --bond 1.701 \
- *     [--industry /tmp/buffett_industry.json] \
- *     -o /tmp/buffett_step1.json
+ *     [--industry tmp/buffett_industry.json] \
+ *     -o tmp/buffett_step1.json \
+ *     [--pass-json tmp/buffett_pass_pool.json]
  */
 
 import fs from "node:fs";
@@ -75,7 +76,7 @@ function main() {
   });
   if (!args.pool || !args.streak) {
     console.error(
-      "usage: node step1_hard_filter.js --pool PATH --streak PATH --bond N [--industry PATH] [-o PATH]",
+      "usage: node step1_hard_filter.js --pool PATH --streak PATH --bond N [--industry PATH] [-o PATH] [--pass-json PATH]",
     );
     return 1;
   }
@@ -146,6 +147,8 @@ function main() {
   };
   const text = JSON.stringify(out, null, 2);
   if (args.output) fs.writeFileSync(args.output, `${text}\n`, "utf8");
+  const passPath = args.passJson || args["pass-json"];
+  if (passPath) fs.writeFileSync(passPath, `${JSON.stringify(passed, null, 2)}\n`, "utf8");
   console.log(
     `N=${pool.length} pass=${passed.length} reject=${rejected.length} bond=${bond} unmapped=${out.n_unmapped}`,
   );

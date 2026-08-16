@@ -5,9 +5,9 @@
  * 唯一出池路径：点「去选股」后扫 Result 页 el-table（固定列 + 滚动列按行对齐）。
  *
  * 用法:
- *   node run_step0_xuangu.js -o /tmp/buffett_xuangu_result.json
- *   node run_step0_xuangu.js --session buffett-xg-demo --pool-json /tmp/buffett_pool.json
- *   node run_step0_xuangu.js --bond-json /tmp/buffett_bond.json
+ *   node run_step0_xuangu.js -o ~/Desktop/temp/buffett_xuangu_result.json
+ *   node run_step0_xuangu.js --session buffett-xg-demo --pool-json ~/Desktop/temp/buffett_pool.json
+ *   node run_step0_xuangu.js --bond-json ~/Desktop/temp/buffett_bond.json
  *   node run_step0_xuangu.js --bond 1.70
  *
  * 股息下限 = 中国10Y国债 × 2（无 --bond / --bond-json 时先抓 Investing）。
@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import {
+  buffettTmp,
   marketFromCode,
   parseArgs,
   parseJsonText,
@@ -411,9 +412,9 @@ function main() {
   const args = parseArgs(process.argv.slice(2), {
     defaults: {
       session: `buffett-xg-${hhmmss}`,
-      output: "/tmp/buffett_xuangu_result.json",
-      poolJson: "/tmp/buffett_pool.json",
-      bondOut: "/tmp/buffett_bond.json",
+      output: buffettTmp("buffett_xuangu_result.json"),
+      poolJson: buffettTmp("buffett_pool.json"),
+      bondOut: buffettTmp("buffett_bond.json"),
     },
   });
   const session = args.session;

@@ -5,15 +5,15 @@
  *
  * 用法:
  *   node pack_step2_facts.js \
- *     --step1 /tmp/buffett_step1.json \
- *     --f10 /tmp/buffett_f10.json \
- *     --bond /tmp/buffett_bond.json \
- *     -o /tmp/buffett_step2_facts.md \
- *     --json /tmp/buffett_step2_facts.json
+ *     --step1 ~/Desktop/temp/buffett_step1.json \
+ *     --f10 ~/Desktop/temp/buffett_f10.json \
+ *     --bond ~/Desktop/temp/buffett_bond.json \
+ *     -o ~/Desktop/temp/buffett_step2_facts.md \
+ *     --json ~/Desktop/temp/buffett_step2_facts.json
  */
 
 import fs from "node:fs";
-import { parseArgs, readJsonFile } from "./opencli_json.js";
+import { buffettTmp, parseArgs, readJsonFile } from "./opencli_json.js";
 import { CLASS_META } from "./industry_map.js";
 import { collectRedFlags, fcfMagnitudeGap } from "./red_lines.js";
 import { WEIGHTS, scoreCard } from "./score_numeric.js";
@@ -119,13 +119,15 @@ function buildCard(row, f10, bondY) {
       ? f10.special.kind
       : "corp";
   const mag = finKind === "corp" ? fcfMagnitudeGap(covers) : null;
-  const redHints = collectRedFlags({
+  const flags = collectRedFlags({
     finKind,
     pay: fnum(f10.pay_ratio),
     div: row.div,
     fcfRows: f10.fcf_cov || [],
     latestProfit: f10.latest_profit ?? f10.fcf_cov?.[0]?.profit,
   });
+  const redHints = flags.hard || [];
+  const softHints = flags.soft || [];
   const gaps = [];
   if (f10.fetch_ok === false) gaps.push(`F10失败: ${f10.error || "unknown"}`);
   if (fnum(f10.pay_ratio) == null) gaps.push("派息率缺失");
@@ -175,6 +177,7 @@ function buildCard(row, f10, bondY) {
     quote: q,
     fetch_ok: f10.fetch_ok !== false,
     red_hints: redHints,
+    soft_hints: softHints,
     data_gaps: gaps,
   };
 }
@@ -255,7 +258,12 @@ function renderMd(step1, bond, cards, paths) {
   L.push("| 代码 | 简称 | 行业类 | 组(n) | 股息% | ROE3% | 若护城河80 | 缺口/红线提示 |");
   L.push("|---|---|---|---|---|---|---|---|");
   for (const c of cards) {
-    const warn = [...(c.data_gaps || []), ...(c.red_hints || [])].join("；") || "—";
+    const warn =
+      [
+        ...(c.data_gaps || []),
+        ...(c.red_hints || []).map((x) => `硬:${x}`),
+        ...(c.soft_hints || []).map((x) => `软:${x}`),
+      ].join("；") || "—";
     const pg = c.score?.peer;
     L.push(
       `| ${c.code} | ${c.name} | ${c.ind_class}/${c.ind_name} | ${pg ? `${pg.key} ${pg.n}` : "—"} | ${fmt(c.div)} | ${fmt(c.roe3)} | ${previewTotal(c.score, 80)} | ${warn} |`,
@@ -303,7 +311,10 @@ function renderMd(step1, bond, cards, paths) {
     for (const line of fcfLines(c.fcf_cov)) L.push(`  - ${line}`);
     L.push("- 银行/保险专项：");
     for (const line of specialLines(c.special)) L.push(`  - ${line}`);
-    L.push(`- 红线机械提示（供复核，不自动定评）：${(c.red_hints || []).join("；") || "无"}`);
+    L.push(`- 红线机械提示 hard（倾向一票否决，须复核）：${(c.red_hints || []).join("；") || "无"}`);
+    L.push(
+      `- 红线机械提示 soft（不自动否决）：${(c.soft_hints || []).join("；") || "无"}`,
+    );
     L.push(`- 缺口：${(c.data_gaps || []).join("；") || "无"}`);
     L.push("");
     L.push("**数字维建议分**");
@@ -341,7 +352,7 @@ export function main(argv = process.argv.slice(2)) {
   const paths = { step1: args.step1, f10: args.f10, bond: args.bond };
   const md = renderMd(step1, bond, cards, paths);
   const jsonPath = args.json;
-  const outPath = args.output || "/tmp/buffett_step2_facts.md";
+  const outPath = args.output || buffettTmp("buffett_step2_facts.md");
 
   fs.writeFileSync(outPath, md, "utf8");
   if (jsonPath) {

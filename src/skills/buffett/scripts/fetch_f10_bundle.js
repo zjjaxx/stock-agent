@@ -3,8 +3,8 @@
  * 抓取个股 F10 深度字段包（buffett Step 2；browser 直开 datacenter）。
  *
  * 用法:
- *   node fetch_f10_bundle.js 600900.SH -o /tmp/600900_f10.json
- *   node fetch_f10_bundle.js --pool /tmp/pass_pool.json -o /tmp/buffett_f10.json --resume
+ *   node fetch_f10_bundle.js 600900.SH -o tmp/600900_f10.json
+ *   node fetch_f10_bundle.js --pool tmp/pass_pool.json -o tmp/buffett_f10.json --resume
  */
 
 import fs from "node:fs";
@@ -217,23 +217,69 @@ function pickPayRatio({ calcPay, profPay, divNewRaw, pb, roe3 }) {
   };
 }
 
-/** 采用 PROFILE 派息时，用净利×派息率回填同年 FCF 分红总额，避免残缺 COMPRE 放大覆盖率 */
-function patchFcfDivFromPay(fcfCov, picked) {
-  if (!picked?.pay_calc || picked.pay_ratio == null) return fcfCov;
-  if (!(picked.pay_ratio_source || "").includes("profile")) return fcfCov;
-  const year = picked.pay_calc.year;
-  const pn = picked.pay_calc.parent_netprofit;
-  if (!year || pn == null || pn <= 0) return fcfCov;
-  const impliedDiv = pn * (picked.pay_ratio / 100);
-  return fcfCov.map((item) => {
-    if (String(item.year) !== String(year)) return item;
-    const next = { ...item, div: impliedDiv, div_source: "implied:profit×profile_pay" };
-    if (item.ocf != null && item.capex != null && impliedDiv) {
+/**
+ * FCF 分红总额口径（按年独立决策，禁止混用导致量级哨兵误报）：
+ * 1) 优先 COMPRE.TOTAL_DIVIDEND（绝对金额）
+ * 2) 若有净利×派息率隐含值，且 COMPRE/隐含 <1/3 → 视 COMPRE 残缺，改用隐含
+ * 3) 仅当 COMPRE 缺失时用隐含回填
+ * 派息率本身仍可优先 PROFILE；此处只统一「覆盖率分母」。
+ */
+export function resolveFcfDivAmounts(fcfCov, picked) {
+  const rows = Array.isArray(fcfCov) ? fcfCov : [];
+  const pay = fnum(picked?.pay_ratio);
+  if (!rows.length) return rows;
+
+  return rows.map((item) => {
+    const compreDiv = fnum(item.div);
+    // 已是 implied 的也当作「无可靠 COMPRE」
+    const compreOk =
+      compreDiv != null &&
+      compreDiv > 0 &&
+      !(item.div_source && String(item.div_source).includes("implied"));
+
+    let impliedDiv = null;
+    if (pay != null && pay > 0 && item.profit != null && item.profit > 0) {
+      impliedDiv = item.profit * (pay / 100);
+    }
+
+    let div = null;
+    let divSource = item.div_source || null;
+
+    if (compreOk && impliedDiv != null && impliedDiv > 0) {
+      const ratio = compreDiv / impliedDiv;
+      if (ratio < 1 / 3) {
+        div = impliedDiv;
+        divSource = "implied:profit×pay(compre-incomplete)";
+      } else {
+        div = compreDiv;
+        divSource = "compre.TOTAL_DIVIDEND";
+      }
+    } else if (compreOk) {
+      div = compreDiv;
+      divSource = "compre.TOTAL_DIVIDEND";
+    } else if (impliedDiv != null && impliedDiv > 0) {
+      div = impliedDiv;
+      divSource = "implied:profit×pay";
+    } else if (compreDiv != null && compreDiv > 0) {
+      div = compreDiv;
+      divSource = item.div_source || "compre.TOTAL_DIVIDEND";
+    }
+
+    const next = { ...item, div, div_source: divSource };
+    if (item.ocf != null && item.capex != null && div) {
       next.fcf = item.ocf - item.capex;
-      next.cover = next.fcf / impliedDiv;
+      next.cover = next.fcf / div;
+    } else {
+      delete next.fcf;
+      delete next.cover;
     }
     return next;
   });
+}
+
+/** @deprecated 使用 resolveFcfDivAmounts；保留别名以免旧调用炸掉 */
+function patchFcfDivFromPay(fcfCov, picked) {
+  return resolveFcfDivAmounts(fcfCov, picked);
 }
 
 function fetchReport(session, report, sc, opts = {}) {
@@ -390,7 +436,18 @@ function buildBundle(code, market, session) {
     pb,
     roe3,
   });
-  const fcfPatched = patchFcfDivFromPay(fcfCov, picked);
+
+  // 用 COMPRE/杜邦已算净利回填 FCF 行，供隐含分红与口径交叉
+  const profitFromPay = {};
+  for (const p of payHist) {
+    if (p.year && p.parent_netprofit != null) profitFromPay[String(p.year)] = p.parent_netprofit;
+  }
+  for (const item of fcfCov) {
+    if (item.profit == null && item.year && profitFromPay[String(item.year)] != null) {
+      item.profit = profitFromPay[String(item.year)];
+    }
+  }
+  const fcfPatched = resolveFcfDivAmounts(fcfCov, picked);
 
   return {
     code,
@@ -449,14 +506,55 @@ function loadPool(path) {
   throw new Error('池文件须为数组，或 {"pool": [...]}');
 }
 
+function selfTestResolveFcf() {
+  const fails = [];
+  const cm = resolveFcfDivAmounts(
+    [
+      { year: "2025", ocf: 232919e6, capex: 156951e6, div: 101808e6, profit: 137100e6 },
+      { year: "2024", ocf: 315741e6, capex: 155979e6, div: 4216e6, profit: 138300e6 },
+    ],
+    { pay_ratio: 74.26 },
+  );
+  for (const row of cm) {
+    if (row.cover == null || row.cover > 5 || row.cover < -2) {
+      fails.push(`cm-magnitude ${row.year} cover=${row.cover}`);
+    }
+  }
+  if (!String(cm[1].div_source || "").includes("compre-incomplete")) {
+    fails.push(`cm-2024-should-replace-compre got ${cm[1].div_source}`);
+  }
+
+  const aligned = resolveFcfDivAmounts(
+    [
+      { year: "2025", ocf: 30e9, capex: 2e9, div: 20e9, profit: 9e9 },
+      { year: "2024", ocf: 34e9, capex: 2.7e9, div: 22e9, profit: 10e9 },
+    ],
+    { pay_ratio: 223.5 },
+  );
+  if (aligned[0].div_source !== "compre.TOTAL_DIVIDEND") {
+    fails.push(`aligned-keep-compre got ${aligned[0].div_source}`);
+  }
+  return fails;
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2), {
     positional: ["code"],
     defaults: { session: "buffett-f10" },
-    booleans: ["resume"],
+    booleans: ["resume", "selfTest", "self-test"],
   });
+  if (args.selfTest || args["self-test"]) {
+    const fails = selfTestResolveFcf();
+    if (fails.length) {
+      console.error(`self-test FAIL ${fails.length}`);
+      for (const f of fails) console.error(`  ${f}`);
+      return 1;
+    }
+    console.log("self-test OK");
+    return 0;
+  }
   if (!args.pool && !args.code) {
-    console.error("error: 需要 code 或 --pool");
+    console.error("error: 需要 code 或 --pool（或 --self-test）");
     return 1;
   }
 
@@ -520,4 +618,6 @@ function main() {
   return 0;
 }
 
-process.exit(main());
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exit(main());
+}

@@ -3,7 +3,7 @@
  * Step1 行业：东财 push2 ulist `f100`（东财行业名），禁止用股票简称猜。
  *
  * 用法:
- *   node fetch_industry.js --pool /tmp/buffett_pool.json -o /tmp/buffett_industry.json
+ *   node fetch_industry.js --pool tmp/buffett_pool.json -o tmp/buffett_industry.json
  */
 
 import { spawnSync } from "node:child_process";

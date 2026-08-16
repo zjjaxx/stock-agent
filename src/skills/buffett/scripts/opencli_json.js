@@ -5,10 +5,25 @@
  * 本轮实跑约定：
  * - browser 直开 API URL → eval document.body.innerText → JSON
  * - opencli 可能在 stdout 夹带 upgrade banner，取首尾大括号/中括号解析
+ * - 落盘缓存统一用 `~/Desktop/temp/`（见 buffettTmp），禁止默认写系统 /tmp 或仓库 tmp/
  */
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+/** 缓存根：`~/Desktop/temp`，不存在则创建。 */
+export function buffettTmpDir() {
+  const dir = path.join(os.homedir(), "Desktop", "temp");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** `~/Desktop/temp/<name>` 的绝对路径。 */
+export function buffettTmp(name) {
+  return path.join(buffettTmpDir(), name);
+}
 
 export function stripJsonText(raw) {
   const objStart = raw.indexOf("{");

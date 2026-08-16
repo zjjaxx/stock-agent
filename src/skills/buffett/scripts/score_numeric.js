@@ -685,6 +685,26 @@ export function selfTest() {
   );
   if (weakFcf.dims.fcf.score > 20) fails.push(`weak-fcf-cap ${weakFcf.dims.fcf.score}`);
 
+  // 白酒 H：PB 6.68 不得再被 G 锚封成 [0,0]
+  const moutaiPb = pbBand("H", 6.68);
+  if (!moutaiPb || moutaiPb.max < 20) fails.push(`baijiu-pb-band ${JSON.stringify(moutaiPb)}`);
+  const wuliangyePb = pbBand("H", 2.43);
+  if (!wuliangyePb || wuliangyePb.min < 80) fails.push(`baijiu-pb-cheap ${JSON.stringify(wuliangyePb)}`);
+  const gTrap = pbBand("G", 6.68);
+  if (!gTrap || gTrap.max !== 0) fails.push("g-still-traps-high-pb");
+
+  const liquor = [
+    { code: "600519", f100: "白酒Ⅱ", ind_class: "H", roe3: 34, pay_ratio: 79, pb: 6.68, debt: 16, fcf_cov: [{ cover: 1.1 }, { cover: 1.3 }] },
+    { code: "000858", f100: "白酒Ⅱ", ind_class: "H", roe3: 18, pay_ratio: 70, pb: 2.43, debt: 36, fcf_cov: [{ cover: 1.4 }, { cover: 1.4 }] },
+    { code: "000568", f100: "白酒Ⅱ", ind_class: "H", roe3: 29, pay_ratio: 78, pb: 2.55, debt: 30, fcf_cov: [{ cover: 1.2 }, { cover: 1.1 }] },
+    { code: "600809", f100: "白酒Ⅱ", ind_class: "H", roe3: 38, pay_ratio: 65, pb: 4.07, debt: 25, fcf_cov: [{ cover: 1.0 }, { cover: 1.2 }] },
+  ];
+  const ms = scoreCard(liquor[0], liquor);
+  if (ms.dims.pb.score === 0) fails.push("moutai-pb-not-zero");
+  if (ms.dims.pb.score == null) fails.push("moutai-pb-missing");
+  const pg = peerGroup(liquor[0], liquor);
+  if (pg.key !== "f100:白酒" || pg.n !== 4) fails.push(`baijiu-peer ${pg.key} n=${pg.n}`);
+
   return fails;
 }
 

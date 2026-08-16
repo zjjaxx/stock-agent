@@ -4,7 +4,7 @@
  *
  * 用法:
  *   node fetch_dividend_streak.js 600900.SH
- *   node fetch_dividend_streak.js --pool /tmp/buffett_pool.json -o /tmp/buffett_step1_div.json
+ *   node fetch_dividend_streak.js --pool tmp/buffett_pool.json -o tmp/buffett_step1_div.json
  */
 
 import fs from "node:fs";

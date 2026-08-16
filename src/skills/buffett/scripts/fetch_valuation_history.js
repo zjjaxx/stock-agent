@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * 近 5 年估值序列 → TTM 股息率分位 + PB 分位（buffett Step 3.3）。
+ * 近 5 年估值序列 → TTM 股息率分位 + PB 分位。
+ *
+ * 注意：buffett skill 已删除「估值分位次路径」。本脚本仅供用户明确要求时的研究参考；
+ * `allow_batch` 字段保留兼容，但 Agent 不得据此给建仓/分批/加仓仓位。
  *
  * 数据：
  *   1) RPT_VALUEANALYSIS_DET：日频 CLOSE_PRICE / PB_MRQ（未复权收盘口，配现金分红）
@@ -9,7 +12,7 @@
  *
  * 用法:
  *   node fetch_valuation_history.js 600900.SH
- *   node fetch_valuation_history.js 600900 --market SH -o /tmp/600900_val.json
+ *   node fetch_valuation_history.js 600900 --market SH -o ~/Desktop/temp/600900_val.json
  */
 
 import fs from "node:fs";

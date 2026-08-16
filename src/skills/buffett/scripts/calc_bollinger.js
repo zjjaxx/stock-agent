@@ -7,9 +7,9 @@
  *   - 月线：24 期，2 倍标准差
  *
  * 用法:
- *   node calc_bollinger.js /tmp/k.json
- *   node fetch_kline_hfq.js 600900 --browser-only -o /tmp/k.json && node calc_bollinger.js /tmp/k.json
- *   node calc_bollinger.js /tmp/k.json --period D --window 20 --nbdev 2
+ *   node calc_bollinger.js tmp/k.json
+ *   node fetch_kline_hfq.js 600900 --browser-only -o tmp/k.json && node calc_bollinger.js tmp/k.json
+ *   node calc_bollinger.js tmp/k.json --period D --window 20 --nbdev 2
  */
 
 import fs from "node:fs";

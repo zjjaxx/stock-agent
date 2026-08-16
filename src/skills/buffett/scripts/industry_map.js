@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 东财行业名 → 策略类别 A–G（画像锚；数字维打分见 score_numeric.js）。
+ * 东财行业名 → 策略类别 A–H（画像锚；数字维打分见 score_numeric.js）。
  * 只匹配行业字段（f100 / BOARD_NAME），禁止用股票简称或代码名单。
  *
  * 用法:
@@ -60,12 +60,21 @@ export const CLASS_META = {
     pay: [30, 70],
     debt: 60,
   },
+  /** 白酒：轻资产高 ROE，PB 常在 2–8；不可套 G 类 PB≤1.2（否则全维封 0）。 */
+  H: {
+    name: "白酒",
+    pb: 6,
+    roe: 20,
+    pay: [50, 80],
+    debt: 40,
+  },
 };
 
 /** 先匹配更具体的行业名；同一字符串只取第一条命中。 */
 const RULES = [
   { cls: "E", re: /银行/, name: "银行", cycle: false },
   { cls: "E", re: /保险/, name: "保险", cycle: false },
+  { cls: "H", re: /白酒/, name: "白酒", cycle: false },
   { cls: "B", re: /通信服务|电信运营|通信运营/, name: "运营商", cycle: false },
   { cls: "A", re: /核力发电|水力发电|风力发电|新能源发电|电力|热电/, name: "公用事业", cycle: false },
   { cls: "A", re: /燃气|水务|供水|公用事业|环境治理/, name: "公用事业", cycle: false },
@@ -157,7 +166,7 @@ const SELF_CASES = [
   ["保险Ⅱ", "E", "中国平安"],
   ["房屋建设Ⅱ", "F", "中国建筑"],
   ["基础建设", "F", "中国交建"],
-  ["白酒Ⅱ", "G", "不再塞进公用档"],
+  ["白酒Ⅱ", "H", "白酒独立画像，不进 G"],
   ["白色家电", "G", "格力"],
   ["房地产开发", "G", "地产"],
 ];
@@ -173,7 +182,9 @@ export function selfTest() {
   const nuclear = classifyIndustry({ f100: "电力", l3: "核力发电" });
   if (nuclear.cls !== "A") fails.push("核电 L3+f100 应为 A");
   const liquor = classifyIndustry({ f100: "白酒Ⅱ" });
-  if (liquor.cls !== "G") fails.push("白酒不得进 A");
+  if (liquor.cls !== "H") fails.push("白酒应为 H");
+  if (liquor.cls === "A") fails.push("白酒不得进 A");
+  if (CLASS_META.H.pb < 4) fails.push("白酒 PB 软锚过低");
   return fails;
 }
 

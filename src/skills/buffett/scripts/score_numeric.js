@@ -1,28 +1,48 @@
 #!/usr/bin/env node
 /**
- * Step 2 数字维：同类分位为主，宽带宽封顶/封底，自身历史防过热。
- * 不打护城河、不定红线终评、不写桌面终报。
+ * Step 2 全量数字评分：同类分位 + 宽带宽 + 自身历史 + 持久性。
+ * 不定红线终评、不写桌面终报。
  *
  * 用法: node score_numeric.js --self-test
  */
 
 import { parseArgs } from "./opencli_json.js";
-import { CLASS_META } from "./industry_map.js";
+import { anchorProfile, metricSource } from "./anchor_config.js";
 
 export const GRADES = [0, 20, 50, 80, 100];
 export const MIN_PEER = 4;
 export const OVERHEAT_MIN_YEARS = 5;
 
 export const WEIGHTS = {
-  corp: { fcf: 0.25, moat: 0.25, pay: 0.15, roe: 0.15, pb: 0.1, debt: 0.1 },
-  bank: { asset: 0.25, moat: 0.25, cet1: 0.15, pay: 0.15, roe: 0.1, nim_trend: 0.1 },
+  corp: {
+    fcf: 0.25,
+    roic_durability: 0.1,
+    margin_durability: 0.07,
+    dividend_discipline: 0.1,
+    pay: 0.14,
+    roe: 0.14,
+    pb: 0.1,
+    debt: 0.1,
+  },
+  bank: {
+    asset: 0.25,
+    cet1: 0.14,
+    pay: 0.15,
+    roe: 0.1,
+    nim_trend: 0.1,
+    pb: 0.1,
+    dividend_discipline: 0.09,
+    roe_stability: 0.07,
+  },
   insurance: {
     solvency: 0.25,
-    moat: 0.25,
-    solvency_trend: 0.15,
+    solvency_trend: 0.14,
     pay: 0.15,
     roe: 0.1,
     roi_trend: 0.1,
+    pb: 0.1,
+    dividend_discipline: 0.09,
+    roe_stability: 0.07,
   },
 };
 
@@ -38,17 +58,16 @@ export const DIM_LABEL = {
   solvency: "偿付充足",
   solvency_trend: "偿付趋势",
   roi_trend: "投资收益趋势",
-  moat: "护城河",
+  roic_durability: "ROIC持久性",
+  margin_durability: "毛利率持久性",
+  dividend_discipline: "分红纪律",
+  roe_stability: "ROE稳定性",
 };
 
 function fnum(x) {
   if (x == null || x === "") return null;
   const v = Number(x);
   return Number.isFinite(v) ? v : null;
-}
-
-function metaOf(cls) {
-  return CLASS_META[cls] && CLASS_META[cls].roe != null ? CLASS_META[cls] : CLASS_META.G;
 }
 
 function normF100(raw) {
@@ -104,31 +123,19 @@ export function ratingOf(total) {
   return "🔴";
 }
 
-/**
- * 优先同一 f100（≥4）；否则升到 A–G。升完仍 <4 则调用方不用分位、不给 100。
- */
+/** 同类仅同一东财 f100；n<4 则不用分位、不给 100。 */
 export function peerGroup(card, cards) {
   const f100 = normF100(card.f100);
-  let peers = [];
-  let key = "class:G";
-  let escalated = false;
-  if (f100) {
-    peers = (cards || []).filter((c) => normF100(c.f100) === f100);
-    key = `f100:${f100}`;
-  }
-  if (peers.length < MIN_PEER) {
-    const cls = card.ind_class || "G";
-    peers = (cards || []).filter((c) => (c.ind_class || "G") === cls);
-    key = `class:${cls}`;
-    escalated = true;
-  }
-  return { peers, key, n: peers.length, escalated };
+  if (!f100) return { peers: [], key: "f100:", n: 0, escalated: false };
+  const peers = (cards || []).filter((c) => normF100(c.f100) === f100);
+  return { peers, key: `f100:${f100}`, n: peers.length, escalated: false };
 }
 
-export function roeBand(cls, roe) {
+export function roeBand(f100, roe) {
   const v = fnum(roe);
   if (v == null) return null;
-  const a = metaOf(cls).roe;
+  const a = fnum(anchorProfile(f100).metrics.roe?.anchor);
+  if (a == null) return null;
   if (v >= a + 4) return { min: 80, max: 100, zone: "excellent" };
   if (v >= a) return { min: 50, max: 80, zone: "good" };
   if (v >= a - 3) return { min: 20, max: 50, zone: "ok" };
@@ -136,10 +143,11 @@ export function roeBand(cls, roe) {
   return { min: 0, max: 0, zone: "bad" };
 }
 
-export function pbBand(cls, pb) {
+export function pbBand(f100, pb) {
   const v = fnum(pb);
   if (v == null || v <= 0) return null;
-  const p = metaOf(cls).pb;
+  const p = fnum(anchorProfile(f100).metrics.pb?.anchor);
+  if (p == null) return { min: 0, max: 100, zone: "peer-only-no-pb-anchor" };
   if (v <= p * 0.6) return { min: 80, max: 100, zone: "excellent" };
   if (v <= p) return { min: 50, max: 80, zone: "good" };
   if (v <= p * 1.4) return { min: 20, max: 50, zone: "ok" };
@@ -147,10 +155,10 @@ export function pbBand(cls, pb) {
   return { min: 0, max: 0, zone: "bad" };
 }
 
-export function debtBand(cls, debt) {
+export function debtBand(f100, debt) {
   const v = fnum(debt);
   if (v == null) return null;
-  const d = metaOf(cls).debt;
+  const d = fnum(anchorProfile(f100).metrics.debt?.anchor);
   if (d == null) return null;
   if (v <= d - 15) return { min: 80, max: 100, zone: "excellent" };
   if (v <= d) return { min: 50, max: 80, zone: "good" };
@@ -175,11 +183,13 @@ export function fcfBand(cover, minCover) {
   return band;
 }
 
-export function payBand(cls, pay, fcfOk) {
+export function payBand(f100, pay, fcfOk) {
   const v = fnum(pay);
   if (v == null) return null;
   if (v > 100) return { min: 0, max: 0, zone: "red>100" };
-  const [lo, hi] = metaOf(cls).pay;
+  const band = anchorProfile(f100).metrics.pay?.band;
+  if (!band) return null;
+  const [lo, hi] = band;
   const wlo = Math.max(0, lo - 10);
   const whi = hi + 10;
   if (v >= wlo && v <= whi) return { min: 50, max: 100, zone: "healthy" };
@@ -332,6 +342,123 @@ function histPay(card) {
   return [];
 }
 
+function stdev(xs) {
+  const values = (xs || []).map(fnum).filter((x) => x != null);
+  if (!values.length) return null;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
+}
+
+function capScore(score, cap, reason, reasons) {
+  if (score > cap) {
+    reasons.push(reason);
+    return cap;
+  }
+  return score;
+}
+
+export function roicDurabilityScore(summary, f100 = "") {
+  const history = (summary?.history || []).map((row) => fnum(row.value)).filter((x) => x != null);
+  if (history.length < 3) return { score: null, value: summary || null, reasons: ["ROIC历史不足3年"] };
+  const med = fnum(summary?.median) ?? median(history);
+  if (med == null) return { score: null, value: summary || null, reasons: ["ROIC中位缺失"] };
+  const profile = anchorProfile(f100);
+  const roicMetric = profile.metrics.roic || {};
+  const anchor = fnum(roicMetric.anchor);
+  if (anchor == null) return { score: null, value: summary || null, reasons: [`f100=${f100 || "无"} 缺 ROIC 锚`] };
+  const [cv80, cv50, cv20] = roicMetric.cv_cuts || [0.3, 0.5, 0.75];
+  let score = med >= anchor * 1.5 ? 100 : med >= anchor ? 80 : med >= anchor * 0.7 ? 50 : med >= anchor * 0.4 ? 20 : 0;
+  const reasons = [
+    `${history.length}年中位${med.toFixed(2)}%，f100锚${anchor}%→${score}`,
+    metricSource(profile, "roic"),
+  ];
+  const sigma = fnum(summary?.stdev) ?? stdev(history);
+  const cv = sigma == null || Math.abs(med) < 0.01 ? null : sigma / Math.abs(med);
+  if (cv != null) {
+    if (cv > cv20) score = capScore(score, 20, `波动CV=${cv.toFixed(2)}>${cv20}，帽20`, reasons);
+    else if (cv > cv50) score = capScore(score, 50, `波动CV=${cv.toFixed(2)}>${cv50}，帽50`, reasons);
+    else if (cv > cv80) score = capScore(score, 80, `波动CV=${cv.toFixed(2)}>${cv80}，帽80`, reasons);
+  }
+  const latest = history[0];
+  const oldest = history[history.length - 1];
+  if (oldest > 0 && latest < oldest * 0.5) {
+    score = capScore(score, 20, "较最早年度下降超过50%，帽20", reasons);
+  } else if (oldest > 0 && latest < oldest * 0.7) {
+    score = capScore(score, 50, "较最早年度下降超过30%，帽50", reasons);
+  }
+  if (history.length < 5) score = capScore(score, 80, `${history.length}年<5年，帽80`, reasons);
+  return { score, value: summary, reasons };
+}
+
+export function marginDurabilityScore(summary, f100 = "") {
+  const history = (summary?.history || []).map((row) => fnum(row.value)).filter((x) => x != null);
+  if (history.length < 3) return { score: null, value: summary || null, reasons: ["毛利率历史不足3年"] };
+  const profile = anchorProfile(f100);
+  const cuts = profile.metrics.margin_sigma?.cuts;
+  if (!cuts) return { score: null, value: summary || null, reasons: [`f100=${f100 || "无"} 缺毛利率波动锚`] };
+  const [c100, c80, c50, c20] = cuts;
+  const sigma = fnum(summary?.stdev) ?? stdev(history);
+  let score = sigma <= c100 ? 100 : sigma <= c80 ? 80 : sigma <= c50 ? 50 : sigma <= c20 ? 20 : 0;
+  const reasons = [
+    `${history.length}年波动σ=${sigma.toFixed(2)}pct→${score}`,
+    metricSource(profile, "margin_sigma"),
+  ];
+  const change = history[0] - history[history.length - 1];
+  if (change <= -10) score = capScore(score, 20, `较最早年度下降${Math.abs(change).toFixed(1)}pct，帽20`, reasons);
+  else if (change <= -5) score = capScore(score, 50, `较最早年度下降${Math.abs(change).toFixed(1)}pct，帽50`, reasons);
+  if (history.length < 5) score = capScore(score, 80, `${history.length}年<5年，帽80`, reasons);
+  return { score, value: summary, reasons };
+}
+
+export function dividendDisciplineScore(payHistory) {
+  const rows = (payHistory || []).filter((row) => fnum(row.dps) != null && fnum(row.dps) > 0).slice(0, 5);
+  if (rows.length < 3) return { score: null, value: { years: rows.length }, reasons: ["每股股息历史不足3年"] };
+  let cuts = 0;
+  for (let i = 0; i < rows.length - 1; i++) {
+    if (Number(rows[i].dps) < Number(rows[i + 1].dps) * 0.95) cuts += 1;
+  }
+  let score = cuts === 0 ? 100 : cuts === 1 ? 50 : cuts === 2 ? 20 : 0;
+  const paySigma = stdev(rows.map((row) => row.pay_pct));
+  const reasons = [`DPS下调${cuts}次→${score}`];
+  if (paySigma != null) {
+    if (paySigma > 30) score = capScore(score, 20, `派息率波动σ=${paySigma.toFixed(1)}pct，帽20`, reasons);
+    else if (paySigma > 20) score = capScore(score, 50, `派息率波动σ=${paySigma.toFixed(1)}pct，帽50`, reasons);
+    else if (paySigma > 10) score = capScore(score, 80, `派息率波动σ=${paySigma.toFixed(1)}pct，帽80`, reasons);
+  }
+  if (rows.length < 5) score = capScore(score, 80, `${rows.length}年<5年，帽80`, reasons);
+  if (rows.length >= 2 && Number(rows[0].dps) < Number(rows[1].dps) * 0.8) {
+    score = capScore(score, 20, "最新DPS同比下调超过20%，帽20", reasons);
+  }
+  return {
+    score,
+    value: { years: rows.length, cuts, payout_stdev: paySigma, dps: rows.map((row) => ({ year: row.year, dps: row.dps })) },
+    reasons,
+  };
+}
+
+export function roeStabilityScore(values, f100 = "") {
+  const history = (values || []).map(fnum).filter((x) => x != null).slice(0, 5);
+  if (history.length < 3) return { score: null, value: { history }, reasons: ["ROE历史不足3年"] };
+  const med = median(history);
+  if (med == null || med <= 0) return { score: 0, value: { history, median: med }, reasons: ["ROE中位≤0"] };
+  const sigma = stdev(history);
+  const cv = sigma / med;
+  const profile = anchorProfile(f100);
+  const cuts = profile.metrics.roe_cv?.cuts;
+  if (!cuts) return { score: null, value: { history, median: med, cv }, reasons: [`f100=${f100 || "无"} 缺 ROE 稳定性锚`] };
+  const [c100, c80, c50, c20] = cuts;
+  let score = cv <= c100 ? 100 : cv <= c80 ? 80 : cv <= c50 ? 50 : cv <= c20 ? 20 : 0;
+  const reasons = [
+    `${history.length}年ROE波动CV=${cv.toFixed(2)}→${score}`,
+    metricSource(profile, "roe_cv"),
+  ];
+  if (history[0] < history[history.length - 1] * 0.7) {
+    score = capScore(score, 50, "ROE较最早年度下降超过30%，帽50", reasons);
+  }
+  if (history.length < 5) score = capScore(score, 80, `${history.length}年<5年，帽80`, reasons);
+  return { score, value: { history, median: med, stdev: sigma, cv }, reasons };
+}
+
 function specialYear(card, i) {
   return (card.special?.years || [])[i] || {};
 }
@@ -350,6 +477,15 @@ function dimBase(id, weight) {
     usable: false,
     reasons: [],
   };
+}
+
+function directDim(id, weight, result) {
+  const dim = dimBase(id, weight);
+  dim.value = result?.value ?? null;
+  dim.score = result?.score ?? null;
+  dim.usable = dim.score != null;
+  dim.reasons = result?.reasons || ["缺字段"];
+  return dim;
 }
 
 function applyNumeric({
@@ -392,20 +528,12 @@ function finKindOf(card) {
   return "corp";
 }
 
-function moatScenarios(weights, dims) {
-  const numeric = Object.entries(weights).filter(([k]) => k !== "moat");
-  const missing = numeric.filter(([k]) => !dims[k]?.usable).map(([k]) => k);
-  const base = numeric.reduce((s, [k, w]) => s + (dims[k]?.usable ? dims[k].score * w : 0), 0);
-  const out = {};
-  for (const moat of GRADES) {
-    if (missing.length) {
-      out[moat] = { total: null, rating: "⚠️", missing };
-      continue;
-    }
-    const total = Math.round(base + moat * weights.moat);
-    out[moat] = { total, rating: ratingOf(total), missing: [] };
-  }
-  return { missing, base, out };
+function totalScore(weights, dims) {
+  const entries = Object.entries(weights);
+  const missing = entries.filter(([id]) => !dims[id]?.usable).map(([id]) => id);
+  if (missing.length) return { total: null, rating: "⚠️", missing };
+  const total = Math.round(entries.reduce((sum, [id, weight]) => sum + dims[id].score * weight, 0));
+  return { total, rating: ratingOf(total), missing: [] };
 }
 
 export function scoreCard(card, cards) {
@@ -413,7 +541,7 @@ export function scoreCard(card, cards) {
   const weights = WEIGHTS[kind] || WEIGHTS.corp;
   const pg = peerGroup(card, cards);
   const n = pg.n;
-  const cls = card.ind_class || "G";
+  const anchors = anchorProfile(card.f100);
   const dims = {};
 
   const peerVals = (getter) => pg.peers.map(getter);
@@ -426,7 +554,7 @@ export function scoreCard(card, cards) {
     value: fnum(card.pay_ratio),
     peersValues: peerVals((c) => fnum(c.pay_ratio)),
     higherBetter: true,
-    band: payBand(cls, card.pay_ratio, fcfOk),
+    band: payBand(card.f100, card.pay_ratio, fcfOk),
     overheat: overheatCap(card.pay_ratio, histPay(card)),
     n,
     suspect: gapHit(card, /派息率踩哨兵/),
@@ -438,8 +566,26 @@ export function scoreCard(card, cards) {
     value: fnum(card.roe3),
     peersValues: peerVals((c) => fnum(c.roe3)),
     higherBetter: true,
-    band: roeBand(cls, card.roe3),
+    band: roeBand(card.f100, card.roe3),
     overheat: overheatCap(card.roe3, histRoe(card)),
+    n,
+    suspect: false,
+  });
+
+  dims.dividend_discipline = directDim(
+    "dividend_discipline",
+    weights.dividend_discipline,
+    dividendDisciplineScore(card.pay_hist),
+  );
+
+  dims.pb = applyNumeric({
+    id: "pb",
+    weight: weights.pb,
+    value: fnum(card.pb),
+    peersValues: peerVals((c) => fnum(c.pb)),
+    higherBetter: false,
+    band: pbBand(card.f100, card.pb),
+    overheat: null,
     n,
     suspect: false,
   });
@@ -456,28 +602,27 @@ export function scoreCard(card, cards) {
       n,
       suspect: fcf.suspect,
     });
-    dims.pb = applyNumeric({
-      id: "pb",
-      weight: weights.pb,
-      value: fnum(card.pb),
-      peersValues: peerVals((c) => fnum(c.pb)),
-      higherBetter: false,
-      band: pbBand(cls, card.pb),
-      overheat: null,
-      n,
-      suspect: false,
-    });
     dims.debt = applyNumeric({
       id: "debt",
       weight: weights.debt,
       value: fnum(card.debt),
       peersValues: peerVals((c) => fnum(c.debt)),
       higherBetter: false,
-      band: debtBand(cls, card.debt),
+      band: debtBand(card.f100, card.debt),
       overheat: null,
       n,
       suspect: false,
     });
+    dims.roic_durability = directDim(
+      "roic_durability",
+      weights.roic_durability,
+      roicDurabilityScore(card.durability_evidence?.roic_5y, card.f100),
+    );
+    dims.margin_durability = directDim(
+      "margin_durability",
+      weights.margin_durability,
+      marginDurabilityScore(card.durability_evidence?.gross_margin_5y, card.f100),
+    );
   }
 
   if (kind === "bank") {
@@ -538,6 +683,11 @@ export function scoreCard(card, cards) {
       usable: nim.score != null,
       reasons: [nim.zone === "missing" ? "净息差趋势缺两年" : `趋势${nim.zone}`],
     };
+    dims.roe_stability = directDim(
+      "roe_stability",
+      weights.roe_stability,
+      roeStabilityScore(histRoe(card), card.f100),
+    );
   }
 
   if (kind === "insurance") {
@@ -570,21 +720,28 @@ export function scoreCard(card, cards) {
       usable: rt.score != null,
       reasons: [rt.zone === "missing" ? "投资收益趋势缺两年" : `趋势${rt.zone}`],
     };
+    dims.roe_stability = directDim(
+      "roe_stability",
+      weights.roe_stability,
+      roeStabilityScore(histRoe(card), card.f100),
+    );
   }
 
-  dims.moat = {
-    ...dimBase("moat", weights.moat),
-    reasons: ["待 Agent 点名 F1–F6"],
-  };
-
-  const scen = moatScenarios(weights, dims);
+  const result = totalScore(weights, dims);
   return {
     kind,
     peer: { key: pg.key, n, escalated: pg.escalated },
+    anchors: {
+      version: anchors.version,
+      f100: anchors.industryKey || null,
+      sources: anchors.sources,
+      pb_source: anchors.metrics.pb?.anchor != null ? "f100锚" : "仅同类分位（PB未校准）",
+    },
     dims,
-    missing: scen.missing,
-    numeric_ok: scen.missing.length === 0,
-    moat_scenarios: scen.out,
+    missing: result.missing,
+    numeric_ok: result.missing.length === 0,
+    total: result.total,
+    rating: result.rating,
   };
 }
 
@@ -611,14 +768,14 @@ export function selfTest() {
   eq(Math.round(percentileHigher(8, xs)), 0, "pctile-worst", fails);
   eq(Math.round(percentileLower(0.6, [0.6, 0.8, 1.2, 1.5])), 100, "pctile-low-best", fails);
 
-  eq(roeBand("A", 14).zone, "excellent", "roe-exc", fails);
-  eq(roeBand("A", 9).zone, "good", "roe-good", fails);
-  eq(roeBand("A", 6).zone, "ok", "roe-ok", fails);
+  eq(roeBand("水力发电", 14).zone, "excellent", "roe-exc", fails);
+  eq(roeBand("水力发电", 9).zone, "good", "roe-good", fails);
+  eq(roeBand("水力发电", 6).zone, "ok", "roe-ok", fails);
   eq(fcfBand(1.2, 1.2).max, 80, "fcf-good-cap80", fails);
   eq(fcfBand(1.8, 0.6).max, 50, "fcf-min-cover-cap", fails);
-  eq(payBand("A", 120, true).zone, "red>100", "pay-red", fails);
-  eq(payBand("A", 85, true).zone, "healthy", "pay-wide-ok", fails);
-  eq(payBand("A", 92, true).zone, "high-ok", "pay-above-ok", fails);
+  eq(payBand("水力发电", 120, true).zone, "red>100", "pay-red", fails);
+  eq(payBand("水力发电", 85, true).zone, "healthy", "pay-wide-ok", fails);
+  eq(payBand("水力发电", 92, true).zone, "high-ok", "pay-above-ok", fails);
 
   const hot = overheatCap(22, [6, 7, 8, 5, 9, 7, 6]);
   eq(hot.cap, 50, "overheat-2x", fails);
@@ -661,23 +818,47 @@ export function selfTest() {
   });
   eq(d100.score, 100, "D-stable-can-100", fails);
 
+  const durable = {
+    roic_5y: {
+      history: [12, 11.5, 11, 10.5, 10].map((value, i) => ({ year: String(2025 - i), value })),
+      n: 5,
+      median: 11,
+      stdev: 0.71,
+    },
+    gross_margin_5y: {
+      history: [40, 39.5, 40.5, 39, 40].map((value, i) => ({ year: String(2025 - i), value })),
+      n: 5,
+      median: 40,
+      stdev: 0.51,
+    },
+  };
+  const disciplined = [1, 0.95, 0.9, 0.85, 0.8].map((dps, i) => ({
+    year: String(2025 - i),
+    dps,
+    pay_pct: 55 + i,
+  }));
   const cards = [
-    { code: "1", f100: "水力发电", ind_class: "A", roe3: 14, pay_ratio: 70, pb: 2.0, debt: 50, fcf_cov: [{ cover: 1.6 }] },
-    { code: "2", f100: "水力发电", ind_class: "A", roe3: 11, pay_ratio: 65, pb: 2.2, debt: 55, fcf_cov: [{ cover: 1.3 }] },
-    { code: "3", f100: "水力发电", ind_class: "A", roe3: 9, pay_ratio: 60, pb: 2.4, debt: 58, fcf_cov: [{ cover: 1.1 }] },
-    { code: "4", f100: "燃气", ind_class: "A", roe3: 8, pay_ratio: 55, pb: 1.8, debt: 48, fcf_cov: [{ cover: 1.2 }] },
-    { code: "5", f100: "燃气", ind_class: "A", roe3: 7.5, pay_ratio: 52, pb: 1.6, debt: 45, fcf_cov: [{ cover: 1.0 }] },
-  ];
+    { code: "1", f100: "水力发电", roe3: 14, pay_ratio: 70, pb: 2.0, debt: 50, fcf_cov: [{ cover: 1.6 }] },
+    { code: "2", f100: "水力发电", roe3: 11, pay_ratio: 65, pb: 2.2, debt: 55, fcf_cov: [{ cover: 1.3 }] },
+    { code: "3", f100: "水力发电", roe3: 9, pay_ratio: 60, pb: 2.4, debt: 58, fcf_cov: [{ cover: 1.1 }] },
+    { code: "4", f100: "水力发电", roe3: 8, pay_ratio: 55, pb: 1.8, debt: 48, fcf_cov: [{ cover: 1.2 }] },
+    { code: "5", f100: "水力发电", roe3: 7.5, pay_ratio: 52, pb: 1.6, debt: 45, fcf_cov: [{ cover: 1.0 }] },
+  ].map((card) => ({
+    ...card,
+    durability_evidence: durable,
+    pay_hist: disciplined,
+    roe_hist: [0, 1, 2, 3, 4].map((i) => ({ year: String(2025 - i), roe: card.roe3 - i * 0.1 })),
+  }));
   const g = peerGroup(cards[0], cards);
-  eq(g.escalated, true, "hydro-escalate", fails);
-  eq(g.n, 5, "class-A-n", fails);
+  eq(g.escalated, false, "hydro-no-escalate", fails);
+  eq(g.n, 5, "hydro-f100-n", fails);
   const s = scoreCard(cards[0], cards);
   if (!s.numeric_ok) fails.push("hydro-numeric-ok");
   if (s.dims.roe.score < 80) fails.push(`top-hydro-roe ${s.dims.roe.score}`);
-  if (s.moat_scenarios[100].total == null) fails.push("scenario-total");
-  const t100 = s.moat_scenarios[100].total;
-  const t80 = s.moat_scenarios[80].total;
-  if (t100 - t80 !== 5) fails.push(`moat-delta ${t100}-${t80}`);
+  if (s.total == null || s.rating === "⚠️") fails.push("fully-numeric-total");
+  if (s.dims.roic_durability.score == null || s.dims.margin_durability.score == null) {
+    fails.push("corp-durability-missing");
+  }
 
   const weakFcf = scoreCard(
     { ...cards[0], fcf_cov: [{ cover: 0.4 }, { cover: 0.5 }] },
@@ -685,20 +866,78 @@ export function selfTest() {
   );
   if (weakFcf.dims.fcf.score > 20) fails.push(`weak-fcf-cap ${weakFcf.dims.fcf.score}`);
 
-  // 白酒 H：PB 6.68 不得再被 G 锚封成 [0,0]
-  const moutaiPb = pbBand("H", 6.68);
+  const bankBase = {
+    f100: "银行Ⅱ",
+    fin_kind: "bank",
+    roe3: 10,
+    pay_ratio: 32,
+    pb: 0.65,
+    pay_hist: disciplined,
+    roe_hist: [10, 10.2, 9.8, 10.1, 9.9].map((roe, i) => ({ year: String(2025 - i), roe })),
+    special: {
+      kind: "bank",
+      years: [
+        { npl: 1.0, provision: 220, cet1: 12, nim: 1.8 },
+        { npl: 1.05, provision: 210, cet1: 11.8, nim: 1.78 },
+      ],
+    },
+  };
+  const banks = [1, 2, 3, 4].map((i) => ({ ...bankBase, code: `b${i}`, pb: 0.6 + i * 0.03 }));
+  const bankScore = scoreCard(banks[0], banks);
+  if (!bankScore.numeric_ok || bankScore.total == null) fails.push(`bank-full-score ${JSON.stringify(bankScore.missing)}`);
+  if (!bankScore.dims.roe_stability?.usable || Object.keys(bankScore.dims).length !== 8) {
+    fails.push("bank-eight-numeric-dimensions");
+  }
+
+  const insuranceBase = {
+    f100: "保险Ⅱ",
+    fin_kind: "insurance",
+    roe3: 11,
+    pay_ratio: 30,
+    pb: 0.75,
+    pay_hist: disciplined,
+    roe_hist: [11, 10.8, 11.2, 10.7, 11.1].map((roe, i) => ({ year: String(2025 - i), roe })),
+    special: {
+      kind: "insurance",
+      years: [
+        { solvency: 220, net_roi: 4.5 },
+        { solvency: 215, net_roi: 4.4 },
+      ],
+    },
+  };
+  const insurers = [1, 2, 3, 4].map((i) => ({ ...insuranceBase, code: `i${i}`, pb: 0.7 + i * 0.03 }));
+  const insuranceScore = scoreCard(insurers[0], insurers);
+  if (!insuranceScore.numeric_ok || insuranceScore.total == null) {
+    fails.push(`insurance-full-score ${JSON.stringify(insuranceScore.missing)}`);
+  }
+
+  const moutaiPb = pbBand("白酒Ⅱ", 6.68);
   if (!moutaiPb || moutaiPb.max < 20) fails.push(`baijiu-pb-band ${JSON.stringify(moutaiPb)}`);
-  const wuliangyePb = pbBand("H", 2.43);
+  const wuliangyePb = pbBand("白酒Ⅱ", 2.43);
   if (!wuliangyePb || wuliangyePb.min < 80) fails.push(`baijiu-pb-cheap ${JSON.stringify(wuliangyePb)}`);
-  const gTrap = pbBand("G", 6.68);
-  if (!gTrap || gTrap.max !== 0) fails.push("g-still-traps-high-pb");
+  const noAnchorPb = pbBand("半导体", 6.68);
+  if (!noAnchorPb || noAnchorPb.zone !== "peer-only-no-pb-anchor") {
+    fails.push(`pb-peer-only ${JSON.stringify(noAnchorPb)}`);
+  }
 
   const liquor = [
-    { code: "600519", f100: "白酒Ⅱ", ind_class: "H", roe3: 34, pay_ratio: 79, pb: 6.68, debt: 16, fcf_cov: [{ cover: 1.1 }, { cover: 1.3 }] },
-    { code: "000858", f100: "白酒Ⅱ", ind_class: "H", roe3: 18, pay_ratio: 70, pb: 2.43, debt: 36, fcf_cov: [{ cover: 1.4 }, { cover: 1.4 }] },
-    { code: "000568", f100: "白酒Ⅱ", ind_class: "H", roe3: 29, pay_ratio: 78, pb: 2.55, debt: 30, fcf_cov: [{ cover: 1.2 }, { cover: 1.1 }] },
-    { code: "600809", f100: "白酒Ⅱ", ind_class: "H", roe3: 38, pay_ratio: 65, pb: 4.07, debt: 25, fcf_cov: [{ cover: 1.0 }, { cover: 1.2 }] },
-  ];
+    { code: "600519", f100: "白酒Ⅱ", roe3: 34, pay_ratio: 79, pb: 6.68, debt: 16, fcf_cov: [{ cover: 1.1 }, { cover: 1.3 }] },
+    { code: "000858", f100: "白酒Ⅱ", roe3: 18, pay_ratio: 70, pb: 2.43, debt: 36, fcf_cov: [{ cover: 1.4 }, { cover: 1.4 }] },
+    { code: "000568", f100: "白酒Ⅱ", roe3: 29, pay_ratio: 78, pb: 2.55, debt: 30, fcf_cov: [{ cover: 1.2 }, { cover: 1.1 }] },
+    { code: "600809", f100: "白酒Ⅱ", roe3: 38, pay_ratio: 65, pb: 4.07, debt: 25, fcf_cov: [{ cover: 1.0 }, { cover: 1.2 }] },
+  ].map((card) => ({
+    ...card,
+    durability_evidence: {
+      ...durable,
+      roic_5y: {
+        ...durable.roic_5y,
+        history: [24, 23, 22, 21, 20].map((value, i) => ({ year: String(2025 - i), value })),
+        median: 22,
+      },
+    },
+    pay_hist: disciplined,
+    roe_hist: [0, 1, 2, 3, 4].map((i) => ({ year: String(2025 - i), roe: card.roe3 - i * 0.2 })),
+  }));
   const ms = scoreCard(liquor[0], liquor);
   if (ms.dims.pb.score === 0) fails.push("moutai-pb-not-zero");
   if (ms.dims.pb.score == null) fails.push("moutai-pb-missing");

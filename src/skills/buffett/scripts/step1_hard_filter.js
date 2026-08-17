@@ -2,8 +2,7 @@
 /**
  * Step 1 硬门槛初筛（连续分红 / 股息缺失）。
  * 市值只在 Step 0 召回（>1000亿），此处不再剔除。
- * 行业来自东财 f100（fetch_industry.js），写入结果供 Step2 事实卡画像参考。
- * 股息相对国债的召回只在 Step 0（≥ 国债×2）；此处只算 bond_ratio 供排序展示。
+ * 行业来自东财 f100（fetch_industry.js），供 Step2 同类分位与锚读取。
  *
  * 用法:
  *   node step1_hard_filter.js \
@@ -16,9 +15,9 @@
  */
 
 import fs from "node:fs";
+import { normalizeIndustry } from "./anchor_config.js";
 import { parseArgs, readJsonFile } from "./opencli_json.js";
 import { fetchIndustryForPool } from "./fetch_industry.js";
-import { CLASS_META, classifyIndustry } from "./industry_map.js";
 
 function loadList(path) {
   const data = readJsonFile(path);
@@ -49,24 +48,12 @@ function industryByCode(pathOrNull, pool, session) {
 }
 
 function mapRow(indRow) {
-  if (indRow?.cls && CLASS_META[indRow.cls]) {
-    return {
-      cls: indRow.cls,
-      ind_name: indRow.ind_name || CLASS_META[indRow.cls].name,
-      cycle_caution: Boolean(indRow.cycle_caution),
-      unmapped: Boolean(indRow.unmapped),
-      f100: indRow.f100 || indRow.industry || "",
-      industry_source: indRow.source || "eastmoney-ulist-f100",
-    };
-  }
-  const mapped = classifyIndustry({ f100: indRow?.f100 || indRow?.industry });
+  const raw = indRow?.f100_raw || indRow?.f100 || indRow?.industry || "";
+  const f100 = normalizeIndustry(raw);
   return {
-    cls: mapped.cls,
-    ind_name: mapped.ind_name,
-    cycle_caution: mapped.cycle_caution,
-    unmapped: mapped.unmapped,
-    f100: mapped.industry || "",
-    industry_source: indRow?.source || "classify",
+    f100,
+    f100_raw: raw || "",
+    industry_source: indRow?.source || "eastmoney-ulist-f100",
   };
 }
 
@@ -119,14 +106,11 @@ function main() {
       div_years: st.div_years,
       pass_div_years: st.pass_div_years,
       fetch_ok: st.fetch_ok,
-      ind_class: mapped.cls,
-      ind_name: mapped.ind_name,
       f100: mapped.f100,
+      f100_raw: mapped.f100_raw,
       industry_source: mapped.industry_source,
-      ind_unmapped: mapped.unmapped,
       bond_yield_pct: bond,
       bond_ratio: ratio,
-      cycle_caution: mapped.cycle_caution,
     };
     if (reasons.length) {
       item.reject_reasons = reasons;
@@ -141,7 +125,7 @@ function main() {
     n_pool: pool.length,
     n_pass: passed.length,
     n_reject: rejected.length,
-    n_unmapped: [...passed, ...rejected].filter((r) => r.ind_unmapped).length,
+    n_missing_f100: [...passed, ...rejected].filter((r) => !r.f100).length,
     pass: passed,
     reject: rejected,
   };
@@ -150,7 +134,7 @@ function main() {
   const passPath = args.passJson || args["pass-json"];
   if (passPath) fs.writeFileSync(passPath, `${JSON.stringify(passed, null, 2)}\n`, "utf8");
   console.log(
-    `N=${pool.length} pass=${passed.length} reject=${rejected.length} bond=${bond} unmapped=${out.n_unmapped}`,
+    `N=${pool.length} pass=${passed.length} reject=${rejected.length} bond=${bond} missing_f100=${out.n_missing_f100}`,
   );
   if (!args.output) console.log(text);
   return 0;

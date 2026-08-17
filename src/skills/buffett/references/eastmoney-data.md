@@ -10,11 +10,13 @@
 | `fetch_bond_yield.js` | Investing 中国 10Y 国债收益率 |
 | `fetch_dividend_streak.js` | Step1：`DIVIDEND_MAIN` 连续年报分红年限 |
 | `fetch_industry.js` | Step1：push2 ulist `f100`（curl 优先，失败则 browser） |
-| `industry_map.js` | 行业名 → A–H 画像锚（含 H 白酒；`--self-test`）；带宽/打分见 `score_numeric.js` |
 | `step1_hard_filter.js` | 连续分红 / 股息缺失初筛（市值只在 Step0）；`--pass-json` 写出通过池 |
-| `fetch_f10_bundle.js` | Step2：ORG/DUPONT/GCASHFLOW/COMPRE/PROFILE/MAINFINADATA + quote；含 ROE/派息历史 |
-| `pack_step2_facts.js` | 合并 Step1+F10 为事实卡，并写入数字维建议分 |
-| `score_numeric.js` | 同类分位 + 宽带宽 + 自身过热帽（`--self-test`）；不打护城河 |
+| `fetch_f10_bundle.js` | Step2：ORG/DUPONT/GCASHFLOW/COMPRE/PROFILE/MAINFINADATA + quote；含 DPS/派息历史与 5 年持久性数据 |
+| `pack_step2_facts.js` | 合并 Step1+F10 为事实卡，并写入全量数字评分与总分 |
+| `score_numeric.js` | 同类分位 + 已批准长期锚 + 自身历史 + 持久性，全量数字评分（`--self-test`） |
+| `build_anchor_pool.js` | 低频校准：按 f100 取总市值靠前样本；默认排除未明确映射的 G 类 |
+| `calibrate_anchors.js` | 低频校准：近 10 年公司中位 → 行业横截面锚，支持 `--resume`；产出 candidate 与复核报告 |
+| `approve_anchors.js` | 人工复核后将 candidate 写入 `anchors.approved.json`；无 `--yes` 仅预览 |
 | `red_lines.js` | Step2 红线机械提示 hard/soft（`--self-test`）；特别分红走 soft |
 | `fetch_kline_hfq.js` | Step3：后复权 K 线（adapter 优先，失败则 `push2his fqt=2`） |
 | `calc_bollinger.js` | Step3：后复权收盘算布林（唯一买卖路径） |
@@ -34,8 +36,22 @@ node $S/fetch_f10_bundle.js --pool ~/Desktop/temp/buffett_pass_pool.json -o ~/De
 node $S/pack_step2_facts.js \
   --step1 ~/Desktop/temp/buffett_step1.json --f10 ~/Desktop/temp/buffett_f10.json --bond ~/Desktop/temp/buffett_bond.json \
   -o ~/Desktop/temp/buffett_step2_facts.md --json ~/Desktop/temp/buffett_step2_facts.json
-# Agent 打护城河 + 复核红线（查事实卡「护城河代入总分」）；K 线只对 🟢/🟡 再抓；勿跑估值分位脚本做买卖
+# Agent 复核红线；总分直接取事实卡脚本结果；K 线只对 🟢/🟡 再抓；勿跑估值分位脚本做买卖
 ```
+
+### 长期锚校准（建议年度更新，不进入日常链路）
+
+```bash
+node $S/build_anchor_pool.js -o ~/Desktop/temp/buffett_anchor_pool.json
+node $S/calibrate_anchors.js --pool ~/Desktop/temp/buffett_anchor_pool.json --resume
+# 先读桌面 buffett-anchor-report-YYYYMMDD.md，再预览并审批：
+node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_YYYYMMDD.json
+node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_YYYYMMDD.json --yes
+```
+
+口径：每家公司至少 5 个完整财年；ROE/ROIC/负债/派息先取公司长期中位，稳定性取公司 CV/σ，再在该 f100 内取横截面中位/分位。单项 N<8 不写入 candidate。日常评分只读 `anchors.approved.json`，candidate 不会自动生效。
+
+**PB 当前不校准**：上述抓取没有历史 PB 字段。有 f100 PB 锚则带宽+分位；无锚则 PB 维仅同类分位。
 
 ## Step 0
 
@@ -121,7 +137,7 @@ Step 0 用 `最新股息率 ≥ 国债×2`；Step 1 只把 `bond_ratio` 写入�
 | 评估字段 | 来源 |
 |---|---|
 | Step 0 候选 | Result 页 el-table（`xuangu-result-dom`） |
-| 行业 A–H | `fetch_industry.js` 的 `f100` → `industry_map.js`（含 H 白酒）。禁止代码名单或简称包含 |
+| 行业 f100 | `fetch_industry.js` 的东财 `f100`；禁止代码名单或简称猜测 |
 | 现价/市值/PE/PB | `eastmoney quote` |
 | TTM 股息率 | 初筛：Result「最新股息率」；个股：PROFILE.`DIVIDEND_NEWRATIO` |
 | 派息率 | 优先 PROFILE.`DIVIDEND_PAY_RATIO`（×100）；哨兵触发则同年 COMPRE÷净利 |
@@ -132,6 +148,9 @@ Step 0 用 `最新股息率 ≥ 国债×2`；Step 1 只把 `bond_ratio` 写入�
 | 负债率 | `DUPONT.DEBT_ASSET_RATIO`（银行/保险不用） |
 | 银行专项 | `NONPERLOAN` / `BLDKBBL` / `HXYJBCZL` / `NET_INTEREST_MARGIN` |
 | 保险专项 | `SOLVENCY_AR` / `NET_ROI` |
+| 持久性（非金融） | 近 5 年 `MAINFINADATA.ROIC` / `XSMLL`，进入 ROIC/毛利率持久性维度 |
+| 分红纪律 | `DIVIDEND_MAIN` 已实施方案按报告年度汇总「10派 X 元」得 DPS；结合派息率历史波动 |
+| 持久性（银行/保险） | 近 5 年 ROE 稳定性 + 分红纪律；专项指标仍按各自原维度评分 |
 | 企业性质 | `REAL_CONTROLER`（主）+ `CONTROL_HOLDER` / `ORG_FORM` |
 | 连续分红 | `DIVIDEND_MAIN` 按年去重 |
 | 估值分位 | `fetch_valuation_history.js`（可选；**不驱动仓位**） |

@@ -8,6 +8,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 import {
   browserFetchJson,
   datacenterRows,
@@ -19,6 +20,8 @@ import {
   runOpencli,
   secucode,
 } from "./opencli_json.js";
+
+const BUNDLE_SCHEMA_VERSION = 3;
 
 function annualRows(rows, dateKey = "REPORT_DATE") {
   const out = [];
@@ -57,8 +60,31 @@ function profilePayRatioToPct(raw) {
   return x;
 }
 
-/** 同年 TOTAL_DIVIDEND ÷ PARENT_NETPROFIT 历年；compre 按 STATISTICS_YEAR 从新到旧 */
-function payoutHist(compre, dupAnnual) {
+/** 从已实施分红方案解析每股现金分红，并按报告年度汇总（含中期/三季 + 年度）。 */
+function dividendDpsHistory(mainRows) {
+  const seenReports = new Set();
+  const byYear = new Map();
+  for (const row of byDateDesc(mainRows || [], "NOTICE_DATE")) {
+    if (String(row.IS_UNASSIGN) === "1") continue;
+    if (!String(row.ASSIGN_PROGRESS || "").includes("实施")) continue;
+    const report = String(row.REPORT_DATE || "");
+    const year = report.match(/(20\d{2})/)?.[1];
+    if (!year || seenReports.has(report)) continue;
+    const plan = String(row.IMPL_PLAN_PROFILE || row.IMPL_PLAN_NEWPROFILE || row.NEW_PROFILE || "");
+    const match = plan.replace(/\s/g, "").match(/10(?:股)?派(?:现(?:金)?)?([\d.]+)元?/);
+    if (!match) continue;
+    const cashPer10 = Number(match[1]);
+    if (!Number.isFinite(cashPer10) || cashPer10 <= 0) continue;
+    seenReports.add(report);
+    byYear.set(year, (byYear.get(year) || 0) + cashPer10 / 10);
+  }
+  return [...byYear.entries()]
+    .sort((a, b) => Number(b[0]) - Number(a[0]))
+    .map(([year, dps]) => ({ year, dps, source: "DIVIDEND_MAIN实施方案" }));
+}
+
+/** 同年派息率与每股股息历史；compre 按 STATISTICS_YEAR 从新到旧。 */
+function payoutHist(compre, dupAnnual, dpsHistory) {
   const profitByYear = {};
   for (const row of dupAnnual) {
     const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
@@ -66,6 +92,7 @@ function payoutHist(compre, dupAnnual) {
     const pn = fnum(row.PARENT_NETPROFIT);
     if (pn != null) profitByYear[m[1]] = pn;
   }
+  const dpsByYear = Object.fromEntries((dpsHistory || []).map((row) => [String(row.year), fnum(row.dps)]));
   const years = [...compre].sort(
     (a, b) => Number(b.STATISTICS_YEAR) - Number(a.STATISTICS_YEAR),
   );
@@ -74,13 +101,16 @@ function payoutHist(compre, dupAnnual) {
     const y = String(c.STATISTICS_YEAR || "");
     const td = fnum(c.TOTAL_DIVIDEND);
     const pn = profitByYear[y];
-    if (td != null && pn != null && pn > 0) {
+    const dps = dpsByYear[y];
+    if (td != null && td > 0 && ((pn != null && pn > 0) || (dps != null && dps > 0))) {
       out.push({
-        pay_pct: (td / pn) * 100,
+        pay_pct: pn != null && pn > 0 ? (td / pn) * 100 : null,
         year: y,
         source: "compre/dupont",
         total_dividend: td,
-        parent_netprofit: pn,
+        parent_netprofit: pn ?? null,
+        dps: dps ?? null,
+        dps_source: dps != null ? "DIVIDEND_MAIN实施方案按报告年度汇总" : null,
       });
     }
   }
@@ -89,6 +119,42 @@ function payoutHist(compre, dupAnnual) {
 
 function byDateDesc(rows, key = "REPORT_DATE") {
   return [...rows].sort((a, b) => String(b[key] || "").localeCompare(String(a[key] || "")));
+}
+
+function median(xs) {
+  const values = xs.filter((x) => x != null).map(Number).sort((a, b) => a - b);
+  if (!values.length) return null;
+  const mid = Math.floor(values.length / 2);
+  return values.length % 2 ? values[mid] : (values[mid - 1] + values[mid]) / 2;
+}
+
+function metricHistory(rows, field, limit = 5) {
+  return (rows || [])
+    .map((row) => {
+      const year = String(row.REPORT_DATE || "").match(/(20\d{2})/)?.[1] || null;
+      return { year, value: fnum(row[field]) };
+    })
+    .filter((row) => row.value != null)
+    .slice(0, limit);
+}
+
+function summarizeHistory(history) {
+  const values = (history || []).map((row) => fnum(row.value)).filter((x) => x != null);
+  if (!values.length) {
+    return { history: [], n: 0, latest: null, median: null, min: null, max: null, stdev: null, change_pp: null };
+  }
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+  return {
+    history,
+    n: values.length,
+    latest: values[0],
+    median: median(values),
+    min: Math.min(...values),
+    max: Math.max(...values),
+    stdev: Math.sqrt(variance),
+    change_pp: values.length >= 2 ? values[0] - values[values.length - 1] : null,
+  };
 }
 
 /** 高息却极低派息 → 视为口径错（如仅含部分分红金额） */
@@ -330,6 +396,22 @@ function extractSpecial(finaAnnual) {
   return { kind, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
 }
 
+/**
+ * 非金融持久性数据：长期 ROIC 与毛利率。
+ * 银行/保险改由既有专项、ROE 与分红历史计算，不套普通企业口径。
+ */
+export function extractDurabilityEvidence(finaAnnual, kind = "corp") {
+  if (kind === "bank" || kind === "insurance") return null;
+  const fina = (finaAnnual || []).slice(0, 5);
+  return {
+    kind,
+    years: [...new Set(fina.map((row) => String(row.REPORT_DATE || "").match(/(20\d{2})/)?.[1]).filter(Boolean))],
+    sources: ["RPT_F10_FINANCE_MAINFINADATA"],
+    roic_5y: summarizeHistory(metricHistory(fina, "ROIC")),
+    gross_margin_5y: summarizeHistory(metricHistory(fina, "XSMLL")),
+  };
+}
+
 function buildBundle(code, market, session) {
   const sc = secucode(code, market);
   const org = fetchReport(session, "RPT_F10_ORG_BASICINFO", sc, { pageSize: 5 });
@@ -345,9 +427,13 @@ function buildBundle(code, market, session) {
     pageSize: 16,
     sortColumns: "STATISTICS_YEAR",
   });
+  const divMain = fetchReport(session, "RPT_F10_DIVIDEND_MAIN", sc, {
+    pageSize: 80,
+    sortColumns: "NOTICE_DATE",
+  });
   const prof = fetchReport(session, "RPT_F10_DIVIDENDNEW_PROFILE", sc, { pageSize: 5 });
   const fina = fetchReport(session, "RPT_F10_FINANCE_MAINFINADATA", sc, {
-    pageSize: 24,
+    pageSize: 48,
     sortColumns: "REPORT_DATE",
   });
 
@@ -355,9 +441,10 @@ function buildBundle(code, market, session) {
   const dupAnnual = byDateDesc(annualRows(dup));
   const cashAnnual = byDateDesc(annualRows(cash));
   const finaAnnual = byDateDesc(annualRows(fina));
-  const dupA = dupAnnual.length ? dupAnnual : byDateDesc(dup.slice(0, 12));
-  const cashA = cashAnnual.length ? cashAnnual : byDateDesc(cash.slice(0, 3));
-  const finaA = finaAnnual.length ? finaAnnual : byDateDesc(fina.slice(0, 3));
+  // 财务评分只认年报；识别失败必须暴露缺口，禁止用季度序列冒充多年历史。
+  const dupA = dupAnnual;
+  const cashA = cashAnnual;
+  const finaA = finaAnnual;
   const special = extractSpecial(finaA);
 
   const roeHist = [];
@@ -420,8 +507,9 @@ function buildBundle(code, market, session) {
   }
 
   const divNewRaw = prof.length ? fnum(prof[0].DIVIDEND_NEWRATIO) : null;
-  const payHist = payoutHist(compre, dupA);
-  const calcPay = payHist[0] || null;
+  const dpsHist = dividendDpsHistory(divMain);
+  const payHist = payoutHist(compre, dupAnnual, dpsHist);
+  const calcPay = payHist.find((row) => row.pay_pct != null) || null;
   const profPay = prof.length
     ? profilePayRatioToPct(prof[0].DIVIDEND_PAY_RATIO)
     : null;
@@ -450,6 +538,7 @@ function buildBundle(code, market, session) {
   const fcfPatched = resolveFcfDivAmounts(fcfCov, picked);
 
   return {
+    schema_version: BUNDLE_SCHEMA_VERSION,
     code,
     market,
     secucode: sc,
@@ -479,6 +568,7 @@ function buildBundle(code, market, session) {
     dividend_newratio: divNewRaw,
     fcf_cov: fcfPatched,
     special,
+    durability_evidence: extractDurabilityEvidence(finaAnnual, special.kind || "corp"),
     quote: q
       ? {
           price: fnum(q.price),
@@ -493,6 +583,7 @@ function buildBundle(code, market, session) {
       dupont: dup.length,
       cashflow: cash.length,
       compre: compre.length,
+      dividend_main: divMain.length,
       profile: prof.length,
       mainfina: fina.length,
     },
@@ -534,6 +625,42 @@ function selfTestResolveFcf() {
   if (aligned[0].div_source !== "compre.TOTAL_DIVIDEND") {
     fails.push(`aligned-keep-compre got ${aligned[0].div_source}`);
   }
+  const payHistory = payoutHist(
+    [{ STATISTICS_YEAR: "2025", TOTAL_DIVIDEND: 10 }],
+    [{ REPORT_DATE: "2025-12-31", PARENT_NETPROFIT: 20 }],
+    [{ year: "2025", dps: 2 }],
+  );
+  if (payHistory[0]?.dps !== 2 || payHistory[0]?.pay_pct !== 50) {
+    fails.push(`dividend-history ${JSON.stringify(payHistory[0])}`);
+  }
+  const dpsHistory = dividendDpsHistory([
+    { REPORT_DATE: "2025年报", NOTICE_DATE: "2026-07-01", ASSIGN_PROGRESS: "实施方案", IMPL_PLAN_PROFILE: "10派7.9元" },
+    { REPORT_DATE: "2025三季报", NOTICE_DATE: "2026-02-01", ASSIGN_PROGRESS: "实施方案", IMPL_PLAN_PROFILE: "10派2.1元" },
+    { REPORT_DATE: "2025半年报", NOTICE_DATE: "2025-08-01", ASSIGN_PROGRESS: "董事会预案", IMPL_PLAN_PROFILE: "10派1元" },
+  ]);
+  if (Math.abs((dpsHistory[0]?.dps ?? 0) - 1) > 1e-9) {
+    fails.push(`dps-plan-aggregate ${JSON.stringify(dpsHistory)}`);
+  }
+
+  const durability = extractDurabilityEvidence(
+    [
+      { REPORT_DATE: "2025-12-31", ROIC: 12, XSMLL: 40 },
+      { REPORT_DATE: "2024-12-31", ROIC: 11, XSMLL: 39 },
+      { REPORT_DATE: "2023-12-31", ROIC: 10, XSMLL: 38 },
+      { REPORT_DATE: "2022-12-31", ROIC: 9, XSMLL: 37 },
+      { REPORT_DATE: "2021-12-31", ROIC: 8, XSMLL: 36 },
+    ],
+    "corp",
+  );
+  if (durability.roic_5y.median !== 10) {
+    fails.push(`durability-roic-median ${durability.roic_5y.median}`);
+  }
+  if (durability.gross_margin_5y.change_pp !== 4) {
+    fails.push(`durability-gross-change ${durability.gross_margin_5y.change_pp}`);
+  }
+  if (extractDurabilityEvidence([], "bank") !== null) {
+    fails.push("bank-should-not-use-corp-durability");
+  }
   return fails;
 }
 
@@ -571,11 +698,12 @@ function main() {
 
   const done = {};
   const outPath = args.output || null;
+  if (outPath) fs.mkdirSync(path.dirname(outPath), { recursive: true });
   if (args.resume && outPath && fs.existsSync(outPath)) {
     const prev = readJsonFile(outPath);
     const rowsPrev = Array.isArray(prev) ? prev : prev.rows || [];
     for (const r of rowsPrev) {
-      if (r.code && r.fetch_ok) done[r.code] = r;
+      if (r.code && r.fetch_ok && r.schema_version === BUNDLE_SCHEMA_VERSION) done[r.code] = r;
     }
   }
 

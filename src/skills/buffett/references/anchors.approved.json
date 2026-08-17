@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "status": "approved",
+  "version": "baseline-f100-2026-08",
+  "generated_at": "2026-08-17",
+  "lookback_years": 10,
+  "method": "f100_only; calibration uses median_of_company_medians",
+  "min_companies": 8,
+  "pb_calibration_enabled": false,
+  "industries": {
+    "水力发电": {
+      "n": 8,
+      "confidence": "baseline",
+      "metrics": {
+        "roe": { "anchor": 8, "n": 8, "calibration_status": "calibrated" },
+        "roic": { "anchor": 5, "cv_cuts": [0.3, 0.5, 0.75], "n": 8, "calibration_status": "calibrated" },
+        "pay": { "band": [50, 80], "n": 8, "calibration_status": "calibrated" },
+        "debt": { "anchor": 65, "n": 8, "calibration_status": "calibrated" },
+        "margin_sigma": { "cuts": [1.5, 3, 5, 8], "n": 8, "calibration_status": "calibrated" },
+        "roe_cv": { "cuts": [0.1, 0.2, 0.35, 0.5], "n": 8, "calibration_status": "calibrated" }
+      }
+    },
+    "白酒": {
+      "n": 8,
+      "confidence": "baseline",
+      "metrics": {
+        "roe": { "anchor": 20, "n": 8, "calibration_status": "calibrated" },
+        "roic": { "anchor": 15, "cv_cuts": [0.3, 0.5, 0.75], "n": 8, "calibration_status": "calibrated" },
+        "pay": { "band": [50, 80], "n": 8, "calibration_status": "calibrated" },
+        "debt": { "anchor": 40, "n": 8, "calibration_status": "calibrated" },
+        "pb": { "anchor": 6, "n": 8, "calibration_status": "calibrated" },
+        "margin_sigma": { "cuts": [1.5, 3, 5, 8], "n": 8, "calibration_status": "calibrated" },
+        "roe_cv": { "cuts": [0.1, 0.2, 0.35, 0.5], "n": 8, "calibration_status": "calibrated" }
+      }
+    },
+    "银行": {
+      "n": 8,
+      "confidence": "baseline",
+      "metrics": {
+        "roe": { "anchor": 9, "n": 8, "calibration_status": "calibrated" },
+        "pay": { "band": [25, 40], "n": 8, "calibration_status": "calibrated" },
+        "pb": { "anchor": 0.8, "n": 8, "calibration_status": "calibrated" },
+        "roe_cv": { "cuts": [0.1, 0.2, 0.35, 0.5], "n": 8, "calibration_status": "calibrated" }
+      }
+    },
+    "保险": {
+      "n": 8,
+      "confidence": "baseline",
+      "metrics": {
+        "roe": { "anchor": 9, "n": 8, "calibration_status": "calibrated" },
+        "pay": { "band": [25, 40], "n": 8, "calibration_status": "calibrated" },
+        "pb": { "anchor": 0.8, "n": 8, "calibration_status": "calibrated" },
+        "roe_cv": { "cuts": [0.1, 0.2, 0.35, 0.5], "n": 8, "calibration_status": "calibrated" }
+      }
+    }
+  }
+}

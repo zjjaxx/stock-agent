@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Step 2 事实卡：合并 Step1 pass + F10/分红包，并打数字维建议分。
- * 护城河、红线定评、今日推荐、桌面终报仍由 Agent 写。
+ * Step 2 事实卡：合并 Step1 pass + F10/分红包，并完成全量数字评分。
+ * 红线定评、今日推荐、桌面终报仍由 Agent 写。
  *
  * 用法:
  *   node pack_step2_facts.js \
@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import { buffettTmp, parseArgs, readJsonFile } from "./opencli_json.js";
-import { CLASS_META } from "./industry_map.js";
+import { anchorProfile } from "./anchor_config.js";
 import { collectRedFlags, fcfMagnitudeGap } from "./red_lines.js";
 import { WEIGHTS, scoreCard } from "./score_numeric.js";
 
@@ -55,19 +55,16 @@ function entHint(controller, holder, orgForm) {
   return "未知";
 }
 
-function industryRef(cls) {
-  const m = CLASS_META[cls] || CLASS_META.G;
-  const pay = m.pay ? `${m.pay[0]}%–${m.pay[1]}%` : "—";
-  const debt = m.debt == null ? "银行/保险不看负债率" : `约≤${m.debt}%`;
+function industryRef(f100) {
+  const profile = anchorProfile(f100);
+  const m = profile.metrics;
+  const pay = m.pay?.band ? `${m.pay.band[0]}%–${m.pay.band[1]}%` : "—";
+  const debt = m.debt?.anchor == null ? "银行/保险通常不看负债率" : `约≤${m.debt.anchor}%`;
+  const roe = m.roe?.anchor != null ? `约≥${m.roe.anchor}%` : "—";
+  const pb = m.pb?.anchor != null ? `约≤${m.pb.anchor}` : "仅同类分位（PB 未校准）";
   return {
-    cls,
-    name: m.name,
-    pay_band: pay,
-    roe_anchor: `约≥${m.roe}%`,
-    pb_soft: `约≤${m.pb}`,
-    debt_note: debt,
-    text:
-      `派息常见 ${pay}；ROE 中枢 ${`约≥${m.roe}%`}；PB 软参考 约≤${m.pb}；负债 ${debt}`,
+    f100: profile.industryKey || f100 || "—",
+    text: `f100=${profile.industryKey || "无"}；派息 ${pay}；ROE 中枢 ${roe}；PB ${pb}；负债 ${debt}`,
   };
 }
 
@@ -105,9 +102,30 @@ function specialLines(special) {
   return lines;
 }
 
+function histText(summary, suffix = "%") {
+  if (!summary?.n) return "—";
+  const hist = (summary.history || []).map((row) => `${row.year || "?"}:${fmt(row.value)}${suffix}`).join(" / ");
+  return `${hist}；${summary.n}年中位 ${fmt(summary.median)}${suffix}，波动σ ${fmt(summary.stdev)}${suffix}`;
+}
+
+function durabilityEvidenceLines(evidence, payHist) {
+  const lines = [];
+  if (evidence) {
+    lines.push(`ROIC：${histText(evidence.roic_5y)}`);
+    lines.push(`毛利率：${histText(evidence.gross_margin_5y)}`);
+  }
+  const dps = (payHist || [])
+    .filter((row) => row.dps != null)
+    .slice(0, 5)
+    .map((row) => `${row.year}:${fmt(row.dps, 4)}`)
+    .join(" / ");
+  lines.push(`每股股息：${dps || "—"}`);
+  return lines;
+}
+
 function buildCard(row, f10, bondY) {
-  const cls = row.ind_class || "G";
-  const ref = industryRef(cls);
+  const f100 = row.f100 || f10.industry?.l2 || "";
+  const ref = industryRef(f100);
   const q = f10.quote || {};
   const name = String(q.name || row.name || "").replace(/^(XD|XR|DR)/, "").replace(/ /g, "");
   const mktYi = fnum(row.mkt_yi) ?? yiFromCap(q.marketCap);
@@ -146,12 +164,10 @@ function buildCard(row, f10, bondY) {
     controller: f10.controller || null,
     holder: f10.holder || null,
     org_form: f10.org_form || null,
-    ind_class: cls,
-    ind_name: row.ind_name || ref.name,
-    f100: row.f100 || f10.industry?.l2 || "",
+    f100,
+    f100_raw: row.f100_raw || f100,
     industry_f10: f10.industry || null,
     industry_ref: ref,
-    cycle_caution: Boolean(row.cycle_caution),
     price,
     pb,
     pe: fnum(q.peDynamic),
@@ -173,6 +189,7 @@ function buildCard(row, f10, bondY) {
     debt: fnum(f10.debt),
     fcf_cov: f10.fcf_cov || [],
     special: f10.special || null,
+    durability_evidence: f10.durability_evidence || null,
     fin_kind: finKind,
     quote: q,
     fetch_ok: f10.fetch_ok !== false,
@@ -182,50 +199,60 @@ function buildCard(row, f10, bondY) {
   };
 }
 
-function previewTotal(score, moat = 80) {
-  const x = score?.moat_scenarios?.[moat];
-  if (!x || x.total == null) return "⚠️";
-  return `${x.total}${x.rating}`;
+function previewTotal(score) {
+  if (!score || score.total == null) return "⚠️";
+  return `${score.total}${score.rating}`;
 }
 
 function dimOrder(kind) {
-  return Object.keys(WEIGHTS[kind] || WEIGHTS.corp).filter((id) => id !== "moat");
+  return Object.keys(WEIGHTS[kind] || WEIGHTS.corp);
+}
+
+function dimValueText(d) {
+  if (d.value == null) return "—";
+  if (d.id === "roic_durability" || d.id === "margin_durability") {
+    return `中位${fmt(d.value.median)}% / σ${fmt(d.value.stdev)}pct / n=${d.value.n ?? 0}`;
+  }
+  if (d.id === "dividend_discipline") {
+    return `DPS下调${d.value.cuts ?? "—"}次 / 派息σ${fmt(d.value.payout_stdev)} / n=${d.value.years ?? 0}`;
+  }
+  if (d.id === "roe_stability") {
+    return `中位${fmt(d.value.median)}% / CV${fmt(d.value.cv)} / n=${d.value.history?.length ?? 0}`;
+  }
+  if (typeof d.value === "object") {
+    return Object.entries(d.value)
+      .filter(([, value]) => typeof value !== "object")
+      .map(([key, value]) => `${key}=${fmt(value)}`)
+      .join(" ");
+  }
+  return fmt(d.value);
 }
 
 function renderScoreBlock(score) {
   if (!score) return ["- 数字维评分：无"];
   const L = [];
   L.push(
-    `- 数字维同类组：\`${score.peer.key}\` n=${score.peer.n}${score.peer.escalated ? "（f100 不足 4 只，升到 A–G）" : ""}`,
+    `- 数字维同类组：\`${score.peer.key}\` n=${score.peer.n}${score.peer.n < 4 ? "（f100 不足 4 只，不用分位）" : ""}`,
   );
+  if (score.anchors) {
+    L.push(
+      `- 评分锚版本：\`${score.anchors.version}\`；f100=${score.anchors.f100 || "无"}；PB=${score.anchors.pb_source}`,
+    );
+  }
   L.push("");
-  L.push("| 维度 | 数值 | 分位 | 分位档 | 带宽 | 过热帽 | 建议档 | 权重 |");
+  L.push("| 维度 | 数值 | 分位 | 分位档 | 带宽 | 过热帽 | 脚本档 | 权重 |");
   L.push("|---|---|---|---|---|---|---|---|");
   for (const id of dimOrder(score.kind)) {
     const d = score.dims[id];
     if (!d) continue;
     const band = d.band ? `[${d.band.min},${d.band.max}] ${d.band.zone}` : "—";
     const cap = d.overheat?.cap != null ? String(d.overheat.cap) : "—";
-    let val = "—";
-    if (d.value != null && typeof d.value === "object") {
-      val = Object.entries(d.value)
-        .map(([k, v]) => `${k}=${fmt(v)}`)
-        .join(" ");
-    } else if (d.value != null) {
-      val = fmt(d.value);
-    }
+    const val = dimValueText(d);
     L.push(
       `| ${d.label} | ${val} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.pct_bucket ?? "—"} | ${band} | ${cap} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
     );
   }
-  L.push(
-    `| 护城河 | — | — | — | — | — | 待 Agent | ${Math.round((score.dims.moat?.weight || 0.25) * 100)}% |`,
-  );
-  const bits = [100, 80, 50, 20, 0].map((m) => {
-    const x = score.moat_scenarios[m];
-    return x.total == null ? `${m}→⚠️` : `${m}→${x.total}${x.rating}`;
-  });
-  L.push(`- 护城河代入总分（红线未核，勿手算）：${bits.join("；")}`);
+  L.push(`- 脚本总分（红线未核）：${score.total == null ? "⚠️" : `${score.total}${score.rating}`}`);
   if (!score.numeric_ok) {
     L.push(`- 数字维缺口：${score.missing.join("、")} → ⚠️ 暂停终评`);
   }
@@ -242,7 +269,7 @@ function renderMd(step1, bond, cards, paths) {
   L.push(`# Buffett Step2 事实卡（数字维已评分）`);
   L.push("");
   L.push(
-    "> 数字维按「同类分位 + 宽带宽封顶/封底 + 自身过热帽」由脚本给出建议档。护城河、红线定评、今日推荐由 Agent 写；禁止重打数字维或手算总分。",
+    "> 总分全部由脚本按「同类分位 + 宽带宽 + 自身历史 + 持久性」生成。经营壁垒仅作不计分备注；红线定评与今日推荐由 Agent 写。禁止重打维度或手算总分。",
   );
   L.push("");
   L.push("## 池摘要");
@@ -253,9 +280,9 @@ function renderMd(step1, bond, cards, paths) {
   L.push(`- Step1：\`${paths.step1}\``);
   L.push(`- F10：\`${paths.f10}\``);
   L.push("");
-  L.push("## 过门槛一览（数字维建议）");
+  L.push("## 过门槛一览（全量数字评分）");
   L.push("");
-  L.push("| 代码 | 简称 | 行业类 | 组(n) | 股息% | ROE3% | 若护城河80 | 缺口/红线提示 |");
+  L.push("| 代码 | 简称 | f100 | 组(n) | 股息% | ROE3% | 脚本总分 | 缺口/红线提示 |");
   L.push("|---|---|---|---|---|---|---|---|");
   for (const c of cards) {
     const warn =
@@ -266,7 +293,7 @@ function renderMd(step1, bond, cards, paths) {
       ].join("；") || "—";
     const pg = c.score?.peer;
     L.push(
-      `| ${c.code} | ${c.name} | ${c.ind_class}/${c.ind_name} | ${pg ? `${pg.key} ${pg.n}` : "—"} | ${fmt(c.div)} | ${fmt(c.roe3)} | ${previewTotal(c.score, 80)} | ${warn} |`,
+      `| ${c.code} | ${c.name} | ${c.f100 || "—"} | ${pg ? `${pg.key} ${pg.n}` : "—"} | ${fmt(c.div)} | ${fmt(c.roe3)} | ${previewTotal(c.score)} | ${warn} |`,
     );
   }
   L.push("");
@@ -283,9 +310,7 @@ function renderMd(step1, bond, cards, paths) {
   for (const c of cards) {
     L.push(`### ${c.code} ${c.name}`);
     L.push("");
-    L.push(
-      `- 行业：东财 ${c.f100 || "—"} → **${c.ind_class} ${c.ind_name}**${c.cycle_caution ? "（周期谨慎）" : ""}`,
-    );
+    L.push(`- 行业：东财 f100 **${c.f100 || "—"}**${c.f100_raw && c.f100_raw !== c.f100 ? `（原始 ${c.f100_raw}）` : ""}`);
     L.push(`- 画像参考（非硬公式）：${c.industry_ref.text}`);
     L.push(
       `- 实控人：${c.controller || "—"}；控股：${c.holder || "—"}；脚本推断性质 **${c.ent_hint}**（以实控人为准，可推翻）`,
@@ -304,20 +329,23 @@ function renderMd(step1, bond, cards, paths) {
     );
     if ((c.pay_hist || []).length) {
       L.push(
-        `- 派息历史：${c.pay_hist.map((r) => `${r.year}:${fmt(r.pay_pct)}%`).join(" / ")}`,
+        `- 派息历史：${c.pay_hist.map((r) => `${r.year}:派息${fmt(r.pay_pct)}%/DPS${fmt(r.dps, 4)}`).join(" / ")}`,
       );
     }
     L.push("- FCF/分红（金额多为东财原单位·元，打分前看量级哨兵）：");
     for (const line of fcfLines(c.fcf_cov)) L.push(`  - ${line}`);
     L.push("- 银行/保险专项：");
     for (const line of specialLines(c.special)) L.push(`  - ${line}`);
+    L.push("- 持久性数据（直接进入脚本评分）：");
+    for (const line of durabilityEvidenceLines(c.durability_evidence, c.pay_hist)) L.push(`  - ${line}`);
+    L.push("- 经营壁垒备注：可选、不计分；仅记录已核实的牌照/资源/网络/转换成本/成本或品牌事实");
     L.push(`- 红线机械提示 hard（倾向一票否决，须复核）：${(c.red_hints || []).join("；") || "无"}`);
     L.push(
       `- 红线机械提示 soft（不自动否决）：${(c.soft_hints || []).join("；") || "无"}`,
     );
     L.push(`- 缺口：${(c.data_gaps || []).join("；") || "无"}`);
     L.push("");
-    L.push("**数字维建议分**");
+    L.push("**全量数字评分**");
     L.push("");
     for (const line of renderScoreBlock(c.score)) L.push(line);
     L.push("");

@@ -8,6 +8,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import { normalizeIndustry } from "./anchor_config.js";
 import {
   browserFetchJson,
   marketFromCode,
@@ -16,7 +17,6 @@ import {
   readJsonFile,
   secid,
 } from "./opencli_json.js";
-import { classifyIndustry } from "./industry_map.js";
 
 const ULIST =
   "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&np=1" +
@@ -84,29 +84,27 @@ export function fetchIndustryForPool(pool, { session = "buffett-industry" } = {}
     const payload = fetchUlist(secids, session);
     for (const d of diffRows(payload)) {
       const code = String(d.f12 || "");
-      const f100 = d.f100 == null || d.f100 === "-" ? "" : String(d.f100);
-      const mapped = classifyIndustry({ f100 });
+      const raw = d.f100 == null || d.f100 === "-" ? "" : String(d.f100);
+      const f100 = normalizeIndustry(raw);
       byCode[code] = {
         code,
         name: d.f14 || "",
         f100,
+        f100_raw: raw,
         source: "eastmoney-ulist-f100",
-        ...mapped,
       };
     }
   }
 
-  const rows = items.map((it) => {
+  return items.map((it) => {
     if (byCode[it.code]) return { ...it, ...byCode[it.code] };
-    const mapped = classifyIndustry({});
     return {
       ...it,
       f100: "",
-      source: "unmapped",
-      ...mapped,
+      f100_raw: "",
+      source: "missing",
     };
   });
-  return rows;
 }
 
 function main() {
@@ -122,8 +120,8 @@ function main() {
   const text = `${JSON.stringify(rows, null, 2)}\n`;
   if (args.output) fs.writeFileSync(args.output, text, "utf8");
   else console.log(text);
-  const mapped = rows.filter((r) => !r.unmapped).length;
-  console.log(`industry N=${rows.length} mapped=${mapped} unmapped=${rows.length - mapped}`);
+  const withF100 = rows.filter((r) => r.f100).length;
+  console.log(`industry N=${rows.length} with_f100=${withF100} missing=${rows.length - withF100}`);
   return 0;
 }
 

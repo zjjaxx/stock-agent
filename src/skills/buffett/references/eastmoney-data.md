@@ -51,6 +51,10 @@ node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_
 
 口径：每家公司至少 5 个完整财年；ROE/ROIC/负债/派息先取公司长期中位，稳定性取公司 CV/σ，再在该 f100 内取横截面中位/分位。单项 N<8 不写入 candidate。日常评分只读 `anchors.approved.json`，candidate 不会自动生效。
 
+`build_anchor_pool.js` 拉东财 `push2/clist` 时 **pz=100 并按 pn 翻页**。接口 pz 上限 100，写 `pz=5000` 会被静默截成市值前 100 只，多数行业 N 不够校准。
+
+clist 默认走 `push2delay.eastmoney.com`（本机 `push2` 常 TLS 被掐，`SSL_ERROR_SYSCALL`）。请求顺序：Node `https`（IPv4）→ `curl -4 --http1.1`（不要 `--compressed`）→ 其它 push2 域名 → 最后才 browser。
+
 **PB 当前不校准**：上述抓取没有历史 PB 字段。有 f100 PB 锚则带宽+分位；无锚则 PB 维仅同类分位。
 
 ## Step 0

@@ -3,8 +3,9 @@
  * 人工审批候选锚。没有 --yes 时只预览，不会修改正式锚。
  *
  * 用法:
+ *   node approve_anchors.js
  *   node approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_YYYYMMDD.json
- *   node approve_anchors.js --candidate ... --yes
+ *   node approve_anchors.js --yes
  */
 
 import fs from "node:fs";
@@ -13,10 +14,20 @@ import {
   APPROVED_ANCHORS,
   APPROVED_ANCHOR_PATH,
 } from "./anchor_config.js";
-import { parseArgs, readJsonFile } from "./opencli_json.js";
+import { buffettTmpDir, parseArgs, readJsonFile } from "./opencli_json.js";
 
 function rawValue(metric) {
   return metric?.anchor ?? metric?.band ?? metric?.cv_cuts ?? metric?.cuts ?? null;
+}
+
+function latestCandidate() {
+  const dir = buffettTmpDir();
+  const files = fs
+    .readdirSync(dir)
+    .filter((name) => /^buffett_anchors_candidate_\d{8}\.json$/.test(name))
+    .map((name) => path.join(dir, name))
+    .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  return files[0] || null;
 }
 
 function changes(candidate) {
@@ -35,9 +46,18 @@ function changes(candidate) {
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2), { booleans: ["yes", "force"] });
-  if (!args.candidate) throw new Error("usage: node approve_anchors.js --candidate PATH [--yes]");
-  const candidate = readJsonFile(args.candidate);
+  const args = parseArgs(process.argv.slice(2), {
+    positional: ["candidate"],
+    booleans: ["yes", "force"],
+  });
+  const candidatePath = args.candidate || latestCandidate();
+  if (!candidatePath) {
+    throw new Error(
+      "没有候选文件。先跑 npm run buffett:anchor-calibrate，或显式传入 --candidate PATH",
+    );
+  }
+  console.log(`candidate file: ${candidatePath}`);
+  const candidate = readJsonFile(candidatePath);
   if (candidate?.status !== "candidate" || candidate?.schema_version !== 2) {
     throw new Error("候选文件状态或 schema_version 非法（须为 2）");
   }
@@ -69,7 +89,7 @@ function main() {
     status: "approved",
     version: `approved-${new Date().toISOString().slice(0, 10)}`,
     approved_at: new Date().toISOString(),
-    source_candidate: path.resolve(args.candidate),
+    source_candidate: path.resolve(candidatePath),
     industries: {
       ...(APPROVED_ANCHORS.industries || {}),
       ...(candidate.industries || {}),

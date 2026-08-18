@@ -10,6 +10,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 
@@ -93,6 +94,120 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+const HTTP_UA = "Mozilla/5.0";
+const HTTP_REFERER = "https://quote.eastmoney.com/";
+
+/** Node https，强制 IPv4。东财 push2 在 macOS 上走 IPv6/HTTP2 常 SSL_ERROR_SYSCALL。 */
+export function nodeHttpsJson(url, { timeoutMs = 25000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolve(value);
+    };
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (exc) {
+      finish(exc);
+      return;
+    }
+    const req = https.request(
+      {
+        protocol: "https:",
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: "GET",
+        family: 4,
+        servername: parsed.hostname,
+        timeout: timeoutMs,
+        headers: {
+          Host: parsed.hostname,
+          "User-Agent": HTTP_UA,
+          Referer: HTTP_REFERER,
+          Accept: "application/json,text/plain,*/*",
+          Connection: "close",
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => {
+          try {
+            const text = Buffer.concat(chunks).toString("utf8");
+            if ((res.statusCode || 0) >= 400) {
+              finish(new Error(`HTTP ${res.statusCode}`));
+              return;
+            }
+            finish(null, parseJsonText(text));
+          } catch (exc) {
+            finish(exc);
+          }
+        });
+      },
+    );
+    req.on("error", (exc) => finish(exc));
+    req.on("timeout", () => {
+      req.destroy();
+      finish(new Error("https timeout"));
+    });
+    req.end();
+  });
+}
+
+/** curl 强制 IPv4 + HTTP/1.1；不要 --compressed（东财 push2 易 SSL_ERROR_SYSCALL）。 */
+export function curlJson(url, extraArgs = []) {
+  const proc = spawnSync(
+    "curl",
+    [
+      "-sS",
+      "-4",
+      "--http1.1",
+      "-A",
+      HTTP_UA,
+      "-H",
+      `Referer: ${HTTP_REFERER}`,
+      "--max-time",
+      "30",
+      ...extraArgs,
+      url,
+    ],
+    { encoding: "utf8" },
+  );
+  if (proc.status !== 0) throw new Error((proc.stderr || "curl failed").slice(0, 300));
+  return parseJsonText(proc.stdout || "");
+}
+
+function curlJsonSimple(url) {
+  const proc = spawnSync("curl", ["-sS", "-A", HTTP_UA, "--max-time", "30", url], { encoding: "utf8" });
+  if (proc.status !== 0) throw new Error((proc.stderr || "curl failed").slice(0, 300));
+  return parseJsonText(proc.stdout || "");
+}
+
+export async function httpGetJson(url, { retries = 1 } = {}) {
+  const errors = [];
+  const attempts = [
+    () => curlJsonSimple(url),
+    () => curlJson(url),
+    () => nodeHttpsJson(url),
+    () => curlJson(url, ["--tlsv1.2"]),
+  ];
+  for (let round = 0; round < retries; round++) {
+    for (const attempt of attempts) {
+      try {
+        return await attempt();
+      } catch (exc) {
+        errors.push(String(exc.message || exc));
+        sleep(200);
+      }
+    }
+  }
+  throw new Error(errors.slice(-4).join(" | "));
+}
+
 export function browserFetchJson(session, url, { sleepS = 0.7, retries = 3 } = {}) {
   let lastErr;
   for (let i = 0; i < retries; i++) {
@@ -101,7 +216,7 @@ export function browserFetchJson(session, url, { sleepS = 0.7, retries = 3 } = {
       sleep(Math.round(sleepS * 1000));
       const raw = browserEval(
         session,
-        '(function(){return document.body && document.body.innerText ? document.body.innerText : "";})()',
+        '(function(){var t=document.body&&document.body.innerText?document.body.innerText:"";if(t&&t.indexOf("{")>=0)return t;var pre=document.querySelector("pre");return (pre&&pre.textContent)||t;})()',
       );
       return parseJsonText(raw);
     } catch (exc) {
@@ -200,8 +315,12 @@ export function writeJson(path, data) {
  */
 export function parseArgs(argv, { positional = [], defaults = {}, booleans = [] } = {}) {
   const out = { ...defaults };
+  for (const [key, val] of Object.entries(defaults)) {
+    out[camelKey(key)] = val;
+  }
   for (const b of booleans) {
     if (out[b] === undefined) out[b] = false;
+    if (out[camelKey(b)] === undefined) out[camelKey(b)] = false;
   }
   const pos = [];
   for (let i = 0; i < argv.length; i++) {

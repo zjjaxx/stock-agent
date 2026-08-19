@@ -100,6 +100,18 @@ export function normalizeIndustry(raw) {
     .trim();
 }
 
+/**
+ * 权重表种类只认东财 f100，禁止用不良/偿付/NIM 字段反推。
+ * 证券/多元金融走 broker，不套非金 FCF。
+ */
+export function finKindFromF100(f100) {
+  const key = normalizeIndustry(f100);
+  if (/银行/.test(key)) return "bank";
+  if (/保险/.test(key)) return "insurance";
+  if (/证券|多元金融/.test(key)) return "broker";
+  return "corp";
+}
+
 function matchRules(text) {
   const t = normalizeIndustry(text);
   if (!t) return null;
@@ -194,6 +206,11 @@ export function selfTest() {
   if (CLASS_META.H.pb < 4) fails.push("白酒 PB 软锚过低");
   if (classPbAnchor("银行") !== 0.8) fails.push("银行类别软锚应为 0.8");
   if (classPbAnchor("白酒Ⅱ") !== 6) fails.push("白酒类别软锚应为 6");
+  if (finKindFromF100("银行Ⅱ") !== "bank") fails.push("fin-kind-bank");
+  if (finKindFromF100("保险") !== "insurance") fails.push("fin-kind-insurance");
+  if (finKindFromF100("证券") !== "broker") fails.push("fin-kind-broker");
+  if (finKindFromF100("多元金融") !== "broker") fails.push("fin-kind-multi-fin");
+  if (finKindFromF100("白酒Ⅱ") !== "corp") fails.push("fin-kind-corp");
   return fails;
 }
 

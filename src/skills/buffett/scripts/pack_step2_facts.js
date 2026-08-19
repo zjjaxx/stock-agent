@@ -18,6 +18,7 @@ import { formatDimAnchor, formatScoreAnchorFooter } from "./anchor_display.js";
 import { anchorProfile } from "./anchor_config.js";
 import { collectRedFlags, fcfMagnitudeGap } from "./red_lines.js";
 import { WEIGHTS, scoreCard } from "./score_numeric.js";
+import { finKindFromF100 } from "./industry_map.js";
 
 function fnum(x) {
   if (x == null || x === "") return null;
@@ -133,10 +134,7 @@ function buildCard(row, f10, bondY) {
   const pb = fnum(q.priceBook) ?? fnum(row.pb);
   const price = fnum(q.price) ?? fnum(row.price);
   const covers = (f10.fcf_cov || []).map((x) => x.cover).filter((x) => x != null);
-  const finKind =
-    f10.special?.kind === "bank" || f10.special?.kind === "insurance"
-      ? f10.special.kind
-      : "corp";
+  const finKind = finKindFromF100(f100);
   const mag = finKind === "corp" ? fcfMagnitudeGap(covers) : null;
   const flags = collectRedFlags({
     finKind,
@@ -189,7 +187,10 @@ function buildCard(row, f10, bondY) {
     pay_hist: f10.pay_hist || [],
     debt: fnum(f10.debt),
     fcf_cov: f10.fcf_cov || [],
-    special: f10.special || null,
+    special: {
+      ...(f10.special || {}),
+      kind: finKind === "corp" ? f10.special?.kind || null : finKind,
+    },
     durability_evidence: f10.durability_evidence || null,
     fin_kind: finKind,
     quote: q,

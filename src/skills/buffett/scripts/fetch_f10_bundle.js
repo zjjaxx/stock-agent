@@ -20,6 +20,7 @@ import {
   runOpencli,
   secucode,
 } from "./opencli_json.js";
+import { finKindFromF100 } from "./industry_map.js";
 
 const BUNDLE_SCHEMA_VERSION = 3;
 
@@ -369,8 +370,8 @@ function quoteOne(code) {
   return null;
 }
 
-/** 从 MAINFINADATA 年报抽取银行/保险专项（缺字段则 null，禁止下游写死分） */
-function extractSpecial(finaAnnual) {
+/** 从 MAINFINADATA 年报抽取银/保专项字段。kind 只认 f100，不用字段反推。 */
+function extractSpecial(finaAnnual, f100 = "") {
   const years = [];
   for (const row of finaAnnual.slice(0, 3)) {
     const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
@@ -386,22 +387,16 @@ function extractSpecial(finaAnnual) {
       net_roi: fnum(row.NET_ROI),
     });
   }
-  const y0 = years[0] || {};
-  let kind = null;
-  if (y0.npl != null || y0.provision != null || y0.cet1 != null || y0.nim != null) {
-    kind = "bank";
-  } else if (y0.solvency != null || y0.net_roi != null) {
-    kind = "insurance";
-  }
-  return { kind, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
+  const kind = finKindFromF100(f100);
+  return { kind: kind === "corp" ? null : kind, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
 }
 
 /**
  * 非金融持久性数据：长期 ROIC 与毛利率。
- * 银行/保险改由既有专项、ROE 与分红历史计算，不套普通企业口径。
+ * 银行/保险/证券改由既有专项、ROE 与分红历史计算，不套普通企业口径。
  */
 export function extractDurabilityEvidence(finaAnnual, kind = "corp") {
-  if (kind === "bank" || kind === "insurance") return null;
+  if (kind === "bank" || kind === "insurance" || kind === "broker") return null;
   const fina = (finaAnnual || []).slice(0, 5);
   return {
     kind,
@@ -412,7 +407,7 @@ export function extractDurabilityEvidence(finaAnnual, kind = "corp") {
   };
 }
 
-function buildBundle(code, market, session) {
+function buildBundle(code, market, session, f100 = "") {
   const sc = secucode(code, market);
   const org = fetchReport(session, "RPT_F10_ORG_BASICINFO", sc, { pageSize: 5 });
   const dup = fetchReport(session, "RPT_F10_FINANCE_DUPONT", sc, {
@@ -445,7 +440,7 @@ function buildBundle(code, market, session) {
   const dupA = dupAnnual;
   const cashA = cashAnnual;
   const finaA = finaAnnual;
-  const special = extractSpecial(finaA);
+  const special = extractSpecial(finaA, f100);
 
   const roeHist = [];
   for (const row of dupA.slice(0, 10)) {
@@ -568,7 +563,7 @@ function buildBundle(code, market, session) {
     dividend_newratio: divNewRaw,
     fcf_cov: fcfPatched,
     special,
-    durability_evidence: extractDurabilityEvidence(finaAnnual, special.kind || "corp"),
+    durability_evidence: extractDurabilityEvidence(finaAnnual, special.kind || finKindFromF100(f100)),
     quote: q
       ? {
           price: fnum(q.price),
@@ -720,7 +715,7 @@ function main() {
     }
     let bundle;
     try {
-      bundle = buildBundle(code, market, args.session);
+      bundle = buildBundle(code, market, args.session, item.f100);
       bundle.name = name || bundle.quote?.name;
     } catch (exc) {
       bundle = {

@@ -8,7 +8,7 @@
 
 import { parseArgs } from "./opencli_json.js";
 import { anchorProfile, metricSource } from "./anchor_config.js";
-import { classPbAnchor } from "./industry_map.js";
+import { classPbAnchor, finKindFromF100 } from "./industry_map.js";
 
 export const GRADES = [0, 20, 50, 80, 100];
 export const MIN_PEER = 4;
@@ -44,6 +44,14 @@ export const WEIGHTS = {
     pb: 0.1,
     dividend_discipline: 0.09,
     roe_stability: 0.07,
+  },
+  broker: {
+    roe_stability: 0.25,
+    pay: 0.15,
+    roe: 0.15,
+    dividend_discipline: 0.1,
+    pb: 0.1,
+    debt: 0.25,
   },
 };
 
@@ -814,8 +822,13 @@ function applyNumeric({
 }
 
 function finKindOf(card) {
-  if (card.fin_kind === "bank" || card.fin_kind === "insurance") return card.fin_kind;
-  if (card.special?.kind === "bank" || card.special?.kind === "insurance") return card.special.kind;
+  if (card.f100) return finKindFromF100(card.f100);
+  if (card.fin_kind === "bank" || card.fin_kind === "insurance" || card.fin_kind === "broker") {
+    return card.fin_kind;
+  }
+  if (card.special?.kind === "bank" || card.special?.kind === "insurance" || card.special?.kind === "broker") {
+    return card.special.kind;
+  }
   return "corp";
 }
 
@@ -1049,6 +1062,26 @@ export function scoreCard(card, cards) {
     );
   }
 
+  if (kind === "broker") {
+    dims.debt = applyNumeric({
+      id: "debt",
+      weight: weights.debt,
+      value: fnum(card.debt),
+      peersValues: peerVals((c) => fnum(c.debt)),
+      higherBetter: false,
+      band: debtBand(card.f100, card.debt),
+      knots: debtKnots(card.f100),
+      overheat: null,
+      n,
+      suspect: false,
+    });
+    dims.roe_stability = directDim(
+      "roe_stability",
+      weights.roe_stability,
+      roeStabilityScore(histRoe(card), card.f100),
+    );
+  }
+
   const result = totalScore(weights, dims);
   return {
     kind,
@@ -1256,6 +1289,25 @@ export function selfTest() {
   if (!insuranceScore.numeric_ok || insuranceScore.total == null) {
     fails.push(`insurance-full-score ${JSON.stringify(insuranceScore.missing)}`);
   }
+
+  const brokerBase = {
+    f100: "证券",
+    roe3: 8.5,
+    pay_ratio: 32,
+    pb: 1.05,
+    debt: 78,
+    pay_hist: disciplined,
+    roe_hist: [8.5, 8.2, 8.0, 8.3, 8.1].map((roe, i) => ({ year: String(2025 - i), roe })),
+  };
+  const brokers = [1, 2, 3, 4].map((i) => ({ ...brokerBase, code: `s${i}`, pb: 0.95 + i * 0.04, debt: 76 + i }));
+  const brokerScore = scoreCard(brokers[0], brokers);
+  if (brokerScore.kind !== "broker") fails.push(`broker-kind ${brokerScore.kind}`);
+  if (brokerScore.dims.fcf) fails.push("broker-must-not-use-fcf");
+  if (!brokerScore.numeric_ok || brokerScore.total == null) {
+    fails.push(`broker-full-score ${JSON.stringify(brokerScore.missing)}`);
+  }
+  const sniffBank = scoreCard({ ...brokerBase, code: "sniff", special: { kind: "bank", years: [{ npl: 1 }] } }, brokers);
+  if (sniffBank.kind !== "broker") fails.push(`broker-f100-beats-npl ${sniffBank.kind}`);
 
   const moutaiPb = pbBand("白酒Ⅱ", 6.68);
   if (!moutaiPb || moutaiPb.source !== "class") {

@@ -25,6 +25,7 @@ import {
   APPROVED_ANCHORS,
   APPROVED_ANCHOR_PATH,
   isFinancialF100,
+  usesCorpCashMetrics,
   normalizeIndustry,
 } from "./anchor_config.js";
 
@@ -160,15 +161,16 @@ function companyFeatures(row) {
   const debt = values("debt");
   const pay = values("pay");
   const margin = values("gross_margin");
-  const nonFinancial = !isFinancialF100(row.f100);
+  const corpCash = usesCorpCashMetrics(row.f100);
+  const skipDebt = isFinancialF100(row.f100);
   return {
     roe: roe.length >= 5 ? median(roe) : null,
     roe_cv: roe.length >= 5 ? cv(roe) : null,
-    roic: nonFinancial && roic.length >= 5 ? median(roic) : null,
-    roic_cv: nonFinancial && roic.length >= 5 ? cv(roic) : null,
-    debt: nonFinancial && debt.length >= 5 ? median(debt) : null,
+    roic: corpCash && roic.length >= 5 ? median(roic) : null,
+    roic_cv: corpCash && roic.length >= 5 ? cv(roic) : null,
+    debt: !skipDebt && debt.length >= 5 ? median(debt) : null,
     pay: pay.length >= 5 ? median(pay) : null,
-    margin_sigma: nonFinancial && margin.length >= 5 ? stdev(margin) : null,
+    margin_sigma: corpCash && margin.length >= 5 ? stdev(margin) : null,
     coverage: {
       roe: roe.length,
       roic: roic.length,
@@ -225,7 +227,7 @@ function calibratedMetrics(rows, minCompanies) {
   return out;
 }
 
-export function buildCandidate(rawRows, { minCompanies = 8, lookbackYears = 10 } = {}) {
+export function buildCandidate(rawRows, { minCompanies = 2, lookbackYears = 10 } = {}) {
   const usable = rawRows.filter((row) => row.fetch_ok).map((row) => ({
     ...row,
     features: companyFeatures(row),
@@ -324,7 +326,7 @@ function main() {
       candidate: path.join(temp, `buffett_anchors_candidate_${date}.json`),
       report: path.join(os.homedir(), "Desktop", `buffett-anchor-report-${date}.md`),
       lookback: "10",
-      "min-companies": "8",
+      "min-companies": "2",
     },
     booleans: ["resume"],
   });

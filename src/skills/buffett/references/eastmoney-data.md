@@ -51,7 +51,7 @@ node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_
 node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_YYYYMMDD.json --yes
 ```
 
-口径：每家公司至少 5 个完整财年；ROE/ROIC/负债/派息先取公司长期中位，稳定性取公司 CV/σ，再在该 f100 内取横截面中位/分位。单项 N<8 不写入 candidate。日常评分只读 `anchors.approved.json`，candidate 不会自动生效。
+口径：每家公司至少 5 个完整财年；ROE/ROIC/负债/派息先取公司长期中位，稳定性取公司 CV/σ，再在该 f100 内取横截面中位/分位。单项 N<2 不写入 candidate。日常评分只读 `anchors.approved.json`，candidate 不会自动生效。
 
 `build_anchor_pool.js` 拉东财 `push2/clist` 时 **pz=100 并按 pn 翻页**。接口 pz 上限 100，写 `pz=5000` 会被静默截成市值前 100 只，多数行业 N 不够校准。
 
@@ -151,12 +151,12 @@ Step 0 用 `最新股息率 ≥ 国债×2`；Step 1 只把 `bond_ratio` 写入�
 | 经营现金流 / 净现比 | `GCASHFLOW.NETCASH_OPERATE` / `MAINFINADATA.NCO_NETPROFIT` |
 | 资本开支 | `GCASHFLOW.CONSTRUCT_LONG_ASSET` |
 | 年度分红 | `DIVIDEND_COMPRE.TOTAL_DIVIDEND` |
-| 负债率 | `DUPONT.DEBT_ASSET_RATIO`（银行/保险不用） |
+| 负债率 | `DUPONT.DEBT_ASSET_RATIO`（银行/保险不用；证券用，对照证券锚） |
 | 银行专项 | `NONPERLOAN` / `BLDKBBL` / `HXYJBCZL` / `NET_INTEREST_MARGIN` |
 | 保险专项 | `SOLVENCY_AR` / `NET_ROI` |
 | 持久性（非金融） | 近 5 年 `MAINFINADATA.ROIC` / `XSMLL`，进入 ROIC/毛利率持久性维度 |
 | 分红纪律 | `DIVIDEND_MAIN` 已实施方案按报告年度汇总「10派 X 元」得 DPS；结合派息率历史波动 |
-| 持久性（银行/保险） | 近 5 年 ROE 稳定性 + 分红纪律；专项指标仍按各自原维度评分 |
+| 持久性（银行/保险/证券） | 近 5 年 ROE 稳定性 + 分红纪律；证券另评负债率。`fin_kind` 只认 f100 |
 | 企业性质 | `REAL_CONTROLER`（主）+ `CONTROL_HOLDER` / `ORG_FORM` |
 | 连续分红 | `DIVIDEND_MAIN` 按年去重 |
 | 估值分位 | `fetch_valuation_history.js`（可选；**不驱动仓位**） |

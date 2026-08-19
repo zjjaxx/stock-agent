@@ -69,7 +69,7 @@ export function classifyPayoutOver100({ pay, fcfRows = [], profit0 = null, profi
 
 /**
  * @param {{
- *   finKind?: "bank"|"insurance"|"corp",
+ *   finKind?: "bank"|"insurance"|"broker"|"corp",
  *   pay?: number|null,
  *   div?: number|null,
  *   fcfRows?: Array<{ year?: string, ocf?: number|null, profit?: number|null, nco?: number|null, cover?: number|null }>,
@@ -86,7 +86,7 @@ export function collectRedFlags({
 } = {}) {
   const hard = [];
   const soft = [];
-  const bankLike = finKind === "bank" || finKind === "insurance";
+  const bankLike = finKind === "bank" || finKind === "insurance" || finKind === "broker";
   const rows = Array.isArray(fcfRows) ? fcfRows : [];
 
   const payoutFlag = classifyPayoutOver100({
@@ -224,6 +224,17 @@ function selfTest() {
     }),
     { hard: [], soft: [] },
     "bank-skip",
+  );
+  eq(
+    collectRedFlags({
+      finKind: "broker",
+      fcfRows: [
+        { ocf: 1, profit: 10, cover: 0.2 },
+        { ocf: 1, profit: 10, cover: 0.2 },
+      ],
+    }),
+    { hard: [], soft: [] },
+    "broker-skip-fcf",
   );
   eq(
     collectRedFlags({ pay: 40, latestProfit: -1, div: 4.2 }),

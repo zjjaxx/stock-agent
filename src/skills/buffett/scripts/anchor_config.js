@@ -35,9 +35,16 @@ export function normalizeIndustry(value) {
     .trim();
 }
 
+/** 银行/保险：校准跳过负债/ROIC/毛利率。证券要留负债锚，不算在内。 */
 export function isFinancialF100(f100) {
   const key = normalizeIndustry(f100);
   return /银行|保险/.test(key);
+}
+
+/** 非金现金流口径（FCF/ROIC/毛利率）。银/保/证都不走。 */
+export function usesCorpCashMetrics(f100) {
+  const key = normalizeIndustry(f100);
+  return !/银行|保险|证券|多元金融/.test(key);
 }
 
 function usable(metric) {

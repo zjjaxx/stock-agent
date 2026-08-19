@@ -8,6 +8,7 @@
 
 import { parseArgs } from "./opencli_json.js";
 import { anchorProfile, metricSource } from "./anchor_config.js";
+import { classPbAnchor } from "./industry_map.js";
 
 export const GRADES = [0, 20, 50, 80, 100];
 export const MIN_PEER = 4;
@@ -54,7 +55,7 @@ export const DIM_LABEL = {
   debt: "负债率",
   asset: "资产质量",
   cet1: "核充率",
-  nim_trend: "净息差趋势",
+  nim_trend: "净息差",
   solvency: "偿付充足",
   solvency_trend: "偿付趋势",
   roi_trend: "投资收益趋势",
@@ -89,6 +90,57 @@ export function snapGrade(x) {
   return GRADES.reduce((b, g) => (Math.abs(g - v) < Math.abs(b - v) ? g : b));
 }
 
+/** 分段线性插值；knots 按 x 升序，端点外 clamp。 */
+export function linearScore(x, knots) {
+  const v = fnum(x);
+  if (v == null || !knum(knots)) return null;
+  const pts = knots
+    .map((k) => ({ x: Number(k.x), y: Number(k.y) }))
+    .filter((k) => Number.isFinite(k.x) && Number.isFinite(k.y))
+    .sort((a, b) => a.x - b.x);
+  if (!pts.length) return null;
+  if (v <= pts[0].x) return Math.round(pts[0].y);
+  if (v >= pts[pts.length - 1].x) return Math.round(pts[pts.length - 1].y);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    if (v >= a.x && v <= b.x) {
+      if (b.x === a.x) return Math.round(b.y);
+      const t = (v - a.x) / (b.x - a.x);
+      return Math.round(a.y + t * (b.y - a.y));
+    }
+  }
+  return Math.round(pts[pts.length - 1].y);
+}
+
+/** 取值所在 knot 段的 [min,max] 得分区间（供同类分位夹段）。 */
+export function linearBandAt(x, knots) {
+  const v = fnum(x);
+  if (v == null || !knum(knots)) return null;
+  const pts = knots
+    .map((k) => ({ x: Number(k.x), y: Number(k.y) }))
+    .filter((k) => Number.isFinite(k.x) && Number.isFinite(k.y))
+    .sort((a, b) => a.x - b.x);
+  if (!pts.length) return null;
+  if (v <= pts[0].x) return { min: pts[0].y, max: pts[0].y };
+  if (v >= pts[pts.length - 1].x) {
+    const y = pts[pts.length - 1].y;
+    return { min: y, max: y };
+  }
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i];
+    const b = pts[i + 1];
+    if (v >= a.x && v <= b.x) {
+      return { min: Math.min(a.y, b.y), max: Math.max(a.y, b.y) };
+    }
+  }
+  return null;
+}
+
+function knum(knots) {
+  return Array.isArray(knots) && knots.length > 0;
+}
+
 /** 含自身；n<2 无法分位。越高越好：严格更差的同伴 / (n-1)。 */
 export function percentileHigher(value, peersInclSelf) {
   const v = fnum(value);
@@ -106,13 +158,15 @@ export function percentileLower(value, peersInclSelf) {
   return (worse / (xs.length - 1)) * 100;
 }
 
+/** @deprecated 保留兼容；新逻辑用 pctToScore（连续 0–100）。 */
 export function pctToBucket(pct) {
+  return pctToScore(pct);
+}
+
+/** 同类分位 → 连续得分 0–100（线性，不再五档跳变）。 */
+export function pctToScore(pct) {
   if (pct == null || !Number.isFinite(pct)) return null;
-  if (pct >= 80) return 100;
-  if (pct >= 60) return 80;
-  if (pct >= 40) return 50;
-  if (pct >= 20) return 20;
-  return 0;
+  return Math.round(Math.max(0, Math.min(100, pct)));
 }
 
 export function ratingOf(total) {
@@ -131,115 +185,243 @@ export function peerGroup(card, cards) {
   return { peers, key: `f100:${f100}`, n: peers.length, escalated: false };
 }
 
-export function roeBand(f100, roe) {
-  const v = fnum(roe);
-  if (v == null) return null;
+export function roeKnots(f100) {
   const a = fnum(anchorProfile(f100).metrics.roe?.anchor);
   if (a == null) return null;
-  if (v >= a + 4) return { min: 80, max: 100, zone: "excellent" };
-  if (v >= a) return { min: 50, max: 80, zone: "good" };
-  if (v >= a - 3) return { min: 20, max: 50, zone: "ok" };
-  if (v >= a - 5) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  return [
+    { x: a - 5, y: 0 },
+    { x: a - 3, y: 20 },
+    { x: a, y: 50 },
+    { x: a + 4, y: 80 },
+    { x: a + 8, y: 100 },
+  ];
+}
+
+export function roeBand(f100, roe) {
+  const knots = roeKnots(f100);
+  const v = fnum(roe);
+  if (!knots || v == null) return null;
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
+}
+
+export function pbKnots(f100) {
+  const p = fnum(anchorProfile(f100).metrics.pb?.anchor) ?? classPbAnchor(f100);
+  if (p == null) return null;
+  return [
+    { x: 0, y: 100 },
+    { x: p * 0.6, y: 80 },
+    { x: p, y: 50 },
+    { x: p * 1.4, y: 20 },
+    { x: p * 2, y: 0 },
+    { x: p * 4, y: 0 },
+  ];
 }
 
 export function pbBand(f100, pb) {
   const v = fnum(pb);
   if (v == null || v <= 0) return null;
-  const p = fnum(anchorProfile(f100).metrics.pb?.anchor);
-  if (p == null) return { min: 0, max: 100, zone: "peer-only-no-pb-anchor" };
-  if (v <= p * 0.6) return { min: 80, max: 100, zone: "excellent" };
-  if (v <= p) return { min: 50, max: 80, zone: "good" };
-  if (v <= p * 1.4) return { min: 20, max: 50, zone: "ok" };
-  if (v <= p * 2) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  const knots = pbKnots(f100);
+  if (!knots) return { min: 0, max: 100, zone: "peer-only-no-pb-anchor" };
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  const approved = fnum(anchorProfile(f100).metrics.pb?.anchor);
+  return { ...band, zone, source: approved != null ? "f100" : "class" };
+}
+
+export function debtKnots(f100) {
+  const d = fnum(anchorProfile(f100).metrics.debt?.anchor);
+  if (d == null) return null;
+  return [
+    { x: 0, y: 100 },
+    { x: d - 15, y: 80 },
+    { x: d, y: 50 },
+    { x: d + 10, y: 20 },
+    { x: d + 20, y: 0 },
+    { x: d + 40, y: 0 },
+  ];
 }
 
 export function debtBand(f100, debt) {
+  const knots = debtKnots(f100);
   const v = fnum(debt);
-  if (v == null) return null;
-  const d = fnum(anchorProfile(f100).metrics.debt?.anchor);
-  if (d == null) return null;
-  if (v <= d - 15) return { min: 80, max: 100, zone: "excellent" };
-  if (v <= d) return { min: 50, max: 80, zone: "good" };
-  if (v <= d + 10) return { min: 20, max: 50, zone: "ok" };
-  if (v <= d + 20) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  if (!knots || v == null) return null;
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
+}
+
+export function fcfKnots() {
+  return [
+    { x: 0, y: 0 },
+    { x: 0.5, y: 10 },
+    { x: 0.8, y: 20 },
+    { x: 1.0, y: 50 },
+    { x: 1.5, y: 80 },
+    { x: 3, y: 100 },
+  ];
 }
 
 /** minCover<1 → 再高也最多 50（差的里面第一仍盖不住分红）。 */
 export function fcfBand(cover, minCover) {
   const v = fnum(cover);
   if (v == null) return null;
-  let band;
-  if (v >= 1.5) band = { min: 80, max: 100, zone: "excellent" };
-  else if (v >= 1.0) band = { min: 50, max: 80, zone: "good" };
-  else if (v >= 0.8) band = { min: 20, max: 50, zone: "ok" };
-  else if (v >= 0.5) band = { min: 0, max: 20, zone: "weak" };
-  else band = { min: 0, max: 0, zone: "bad" };
+  const knots = fcfKnots();
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  let { min, max } = band;
+  let zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
   if (fnum(minCover) != null && minCover < 1) {
-    band = { ...band, max: Math.min(band.max, 50), zone: `${band.zone}|cover<1` };
+    max = Math.min(max, 50);
+    zone = `${zone}|cover<1`;
   }
-  return band;
+  return { min, max, zone };
+}
+
+export function payKnots(f100, fcfOk) {
+  const band = anchorProfile(f100).metrics.pay?.band;
+  if (!band) return null;
+  const [lo, hi] = band;
+  const wlo = Math.max(0, lo - 10);
+  const whi = hi + 10;
+  const knots = [
+    { x: 0, y: 5 },
+    { x: Math.max(0, wlo - 10), y: 20 },
+    { x: wlo, y: 50 },
+    { x: (wlo + whi) / 2, y: 75 },
+    { x: whi, y: 100 },
+  ];
+  if (fcfOk) {
+    knots.push({ x: whi + 10, y: 80 }, { x: whi + 25, y: 65 }, { x: 150, y: 50 });
+  } else {
+    knots.push({ x: whi + 10, y: 45 }, { x: whi + 25, y: 30 }, { x: 150, y: 15 });
+  }
+  return knots.sort((a, b) => a.x - b.x);
 }
 
 export function payBand(f100, pay, fcfOk) {
   const v = fnum(pay);
   if (v == null) return null;
   if (v > 100) return { min: 0, max: 0, zone: "red>100" };
-  const band = anchorProfile(f100).metrics.pay?.band;
+  const knots = payKnots(f100, fcfOk);
+  if (!knots) return null;
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
   if (!band) return null;
-  const [lo, hi] = band;
+  const payBandAnchor = anchorProfile(f100).metrics.pay?.band;
+  const lo = payBandAnchor?.[0] ?? 0;
+  const hi = payBandAnchor?.[1] ?? 0;
   const wlo = Math.max(0, lo - 10);
   const whi = hi + 10;
-  if (v >= wlo && v <= whi) return { min: 50, max: 100, zone: "healthy" };
-  if (v > whi) {
-    return fcfOk
-      ? { min: 50, max: 80, zone: "high-ok" }
-      : { min: 20, max: 50, zone: "high-weak" };
-  }
-  if (v >= wlo - 10) return { min: 20, max: 50, zone: "low" };
-  return { min: 0, max: 20, zone: "very-low" };
+  let zone = "healthy";
+  if (v > whi) zone = fcfOk ? "high-ok" : "high-weak";
+  else if (v < wlo) zone = "low";
+  if (score <= 15) zone = "very-low";
+  return { ...band, zone };
+}
+
+export function nplKnots() {
+  return [
+    { x: 0, y: 100 },
+    { x: 0.9, y: 90 },
+    { x: 1.5, y: 65 },
+    { x: 2.0, y: 35 },
+    { x: 3.0, y: 10 },
+    { x: 5, y: 0 },
+  ];
 }
 
 export function nplBand(npl) {
+  const knots = nplKnots();
   const v = fnum(npl);
   if (v == null) return null;
-  if (v <= 0.9) return { min: 80, max: 100, zone: "excellent" };
-  if (v <= 1.5) return { min: 50, max: 80, zone: "good" };
-  if (v <= 2.0) return { min: 20, max: 50, zone: "ok" };
-  if (v <= 3.0) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
+}
+
+export function provisionKnots() {
+  return [
+    { x: 0, y: 0 },
+    { x: 120, y: 10 },
+    { x: 150, y: 20 },
+    { x: 180, y: 50 },
+    { x: 250, y: 80 },
+    { x: 400, y: 100 },
+  ];
 }
 
 export function provisionBand(prov) {
+  const knots = provisionKnots();
   const v = fnum(prov);
   if (v == null) return null;
-  if (v >= 250) return { min: 80, max: 100, zone: "excellent" };
-  if (v >= 180) return { min: 50, max: 80, zone: "good" };
-  if (v >= 150) return { min: 20, max: 50, zone: "ok" };
-  if (v >= 120) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
+}
+
+export function cet1Knots() {
+  return [
+    { x: 0, y: 0 },
+    { x: 8, y: 10 },
+    { x: 9.5, y: 20 },
+    { x: 11, y: 50 },
+    { x: 13, y: 80 },
+    { x: 16, y: 100 },
+  ];
 }
 
 export function cet1Band(cet1) {
+  const knots = cet1Knots();
   const v = fnum(cet1);
   if (v == null) return null;
-  if (v >= 13) return { min: 80, max: 100, zone: "excellent" };
-  if (v >= 11) return { min: 50, max: 80, zone: "good" };
-  if (v >= 9.5) return { min: 20, max: 50, zone: "ok" };
-  if (v >= 8) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
+}
+
+export function solvencyKnots() {
+  return [
+    { x: 0, y: 0 },
+    { x: 120, y: 10 },
+    { x: 150, y: 20 },
+    { x: 180, y: 50 },
+    { x: 250, y: 80 },
+    { x: 400, y: 100 },
+  ];
 }
 
 export function solvencyBand(sol) {
+  const knots = solvencyKnots();
   const v = fnum(sol);
   if (v == null) return null;
-  if (v >= 250) return { min: 80, max: 100, zone: "excellent" };
-  if (v >= 180) return { min: 50, max: 80, zone: "good" };
-  if (v >= 150) return { min: 20, max: 50, zone: "ok" };
-  if (v >= 120) return { min: 0, max: 20, zone: "weak" };
-  return { min: 0, max: 0, zone: "bad" };
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
 }
 
 /** 相对自身中位数：≥2 倍帽 50；≥1.5 倍帽 80。自身历史高分位须同时 ≥1.3 倍才戴帽（避免 12–14% 窄波动误伤）。不足 5 年不戴帽。 */
@@ -272,10 +454,59 @@ export function nimTrendScore(newer, older) {
   const b = fnum(older);
   if (a == null || b == null) return { score: null, zone: "missing" };
   const chg = a - b;
-  if (chg >= 0.08) return { score: 80, zone: "up" };
-  if (chg >= -0.08) return { score: 50, zone: "flat" };
-  if (chg >= -0.2) return { score: 20, zone: "down" };
-  return { score: 0, zone: "down-hard" };
+  const score = linearScore(chg, [
+    { x: -0.2, y: 0 },
+    { x: -0.08, y: 20 },
+    { x: 0, y: 50 },
+    { x: 0.08, y: 80 },
+    { x: 0.2, y: 100 },
+  ]);
+  const zone = chg >= 0.08 ? "up" : chg >= -0.08 ? "flat" : chg >= -0.2 ? "down" : "down-hard";
+  return { score, zone };
+}
+
+/** 净息差水平（百分点）。主尺；两年变动只做弱于同业时的封顶。 */
+export function nimLevelKnots() {
+  return [
+    { x: 0.7, y: 0 },
+    { x: 1.0, y: 20 },
+    { x: 1.3, y: 50 },
+    { x: 1.6, y: 80 },
+    { x: 2.1, y: 100 },
+  ];
+}
+
+export function nimLevelBand(nim) {
+  const knots = nimLevelKnots();
+  const v = fnum(nim);
+  if (v == null) return null;
+  const band = linearBandAt(v, knots);
+  const score = linearScore(v, knots);
+  if (!band) return null;
+  const zone =
+    score >= 80 ? "excellent" : score >= 50 ? "good" : score >= 20 ? "ok" : score > 0 ? "weak" : "bad";
+  return { ...band, zone };
+}
+
+/**
+ * 同业也在收窄则不罚；只有明显弱于同业中位才戴帽。
+ * 无足够同业样本时，仅对两年下降 ≥0.20pct 戴帽 50。
+ */
+export function nimTrendCap(chg, peerChgs) {
+  const delta = fnum(chg);
+  if (delta == null) return { cap: null, reason: null };
+  const xs = (peerChgs || []).map(fnum).filter((x) => x != null);
+  const med = xs.length >= MIN_PEER ? median(xs) : null;
+  if (med == null) {
+    if (delta <= -0.2) return { cap: 50, reason: "净息差两年下降≥0.20" };
+    return { cap: null, reason: null };
+  }
+  if (delta >= med - 0.03) {
+    return { cap: null, reason: `两年变动${delta.toFixed(2)}贴近同业中位${med.toFixed(2)}` };
+  }
+  if (delta <= -0.2) return { cap: 20, reason: "净息差两年下降≥0.20且弱于同业" };
+  if (delta <= -0.08) return { cap: 80, reason: "净息差两年下降>0.08且弱于同业" };
+  return { cap: null, reason: null };
 }
 
 export function relTrendScore(newer, older) {
@@ -283,36 +514,53 @@ export function relTrendScore(newer, older) {
   const b = fnum(older);
   if (a == null || b == null || b === 0) return { score: null, zone: "missing" };
   const rel = (a - b) / Math.abs(b);
-  if (rel >= 0.05) return { score: 80, zone: "up" };
-  if (rel >= -0.05) return { score: 50, zone: "flat" };
-  if (rel >= -0.15) return { score: 20, zone: "down" };
-  return { score: 0, zone: "down-hard" };
+  const score = linearScore(rel, [
+    { x: -0.15, y: 0 },
+    { x: -0.05, y: 20 },
+    { x: 0, y: 50 },
+    { x: 0.05, y: 80 },
+    { x: 0.15, y: 100 },
+  ]);
+  const zone = rel >= 0.05 ? "up" : rel >= -0.05 ? "flat" : rel >= -0.15 ? "down" : "down-hard";
+  return { score, zone };
 }
 
 /**
- * n≥4：分位档夹进带宽。
- * n<4：不用分位，取带宽下沿（不给 100）。
- * 过热帽最后压一档。
+ * n≥4：同类分位（连续 0–100）夹进绝对值 knot 段 [min,max]。
+ * n<4：绝对值线性分，封顶 80（不给 100）。
  */
-export function finishScore({ pctBucket, band, n, overheat }) {
-  if (!band) return { score: null, reasons: [] };
+export function finishScore({ pct, band, knots, value, n, overheat }) {
+  const knotList = knots || band?.knots;
   const reasons = [];
   let score;
+  const absScore = knotList && value != null ? linearScore(value, knotList) : null;
+  const segment = knotList && value != null ? linearBandAt(value, knotList) : band;
+
+  if (!segment && absScore == null && pct == null) return { score: null, reasons: [] };
+
   if (n < MIN_PEER) {
-    score = band.min;
-    reasons.push(`样本n=${n}<${MIN_PEER}，不用分位，带宽下沿${score}`);
-  } else if (pctBucket == null) {
-    score = band.min;
-    reasons.push(`分位不足，带宽下沿${score}`);
+    score = absScore != null ? Math.min(absScore, 80) : segment?.min ?? null;
+    reasons.push(`样本n=${n}<${MIN_PEER}，绝对分${absScore ?? "—"}封顶80→${score}`);
   } else {
-    score = Math.min(band.max, Math.max(band.min, pctBucket));
-    reasons.push(`分位档${pctBucket}夹带宽[${band.min},${band.max}]→${score}`);
+    const pctScore = pctToScore(pct);
+    if (pctScore == null) {
+      score = absScore;
+      reasons.push(`分位不足，绝对分${score ?? "—"}`);
+    } else if (segment) {
+      score = Math.max(segment.min, Math.min(segment.max, pctScore));
+      reasons.push(`分位${pctScore}夹段[${segment.min},${segment.max}]→${score}`);
+    } else {
+      score = pctScore;
+      reasons.push(`仅同类分位→${score}`);
+    }
   }
+
   const cap = overheat?.cap;
-  if (cap != null && cap < score) {
+  if (cap != null && score != null && cap < score) {
     reasons.push(`过热帽${cap}${overheat.reason ? `(${overheat.reason})` : ""}`);
     score = cap;
   }
+  if (score != null) score = Math.round(score);
   return { score, reasons };
 }
 
@@ -366,18 +614,32 @@ export function roicDurabilityScore(summary, f100 = "") {
   const roicMetric = profile.metrics.roic || {};
   const anchor = fnum(roicMetric.anchor);
   if (anchor == null) return { score: null, value: summary || null, reasons: [`f100=${f100 || "无"} 缺 ROIC 锚`] };
-  const [cv80, cv50, cv20] = roicMetric.cv_cuts || [0.3, 0.5, 0.75];
-  let score = med >= anchor * 1.5 ? 100 : med >= anchor ? 80 : med >= anchor * 0.7 ? 50 : med >= anchor * 0.4 ? 20 : 0;
+  let score = linearScore(med / anchor, [
+    { x: 0.4, y: 0 },
+    { x: 0.7, y: 20 },
+    { x: 1.0, y: 50 },
+    { x: 1.5, y: 80 },
+    { x: 2.0, y: 100 },
+  ]);
   const reasons = [
     `${history.length}年中位${med.toFixed(2)}%，f100锚${anchor}%→${score}`,
     metricSource(profile, "roic"),
   ];
   const sigma = fnum(summary?.stdev) ?? stdev(history);
   const cv = sigma == null || Math.abs(med) < 0.01 ? null : sigma / Math.abs(med);
-  if (cv != null) {
-    if (cv > cv20) score = capScore(score, 20, `波动CV=${cv.toFixed(2)}>${cv20}，帽20`, reasons);
-    else if (cv > cv50) score = capScore(score, 50, `波动CV=${cv.toFixed(2)}>${cv50}，帽50`, reasons);
-    else if (cv > cv80) score = capScore(score, 80, `波动CV=${cv.toFixed(2)}>${cv80}，帽80`, reasons);
+  if (cv != null && roicMetric.cv_cuts) {
+    const [cv80, cv50, cv20] = roicMetric.cv_cuts;
+    const cvCap = linearScore(cv, [
+      { x: 0, y: 100 },
+      { x: cv80, y: 80 },
+      { x: cv50, y: 50 },
+      { x: cv20, y: 20 },
+      { x: cv20 * 1.5, y: 0 },
+    ]);
+    if (cvCap != null && cvCap < score) {
+      score = cvCap;
+      reasons.push(`波动CV=${cv.toFixed(2)}线性帽→${score}`);
+    }
   }
   const latest = history[0];
   const oldest = history[history.length - 1];
@@ -398,7 +660,14 @@ export function marginDurabilityScore(summary, f100 = "") {
   if (!cuts) return { score: null, value: summary || null, reasons: [`f100=${f100 || "无"} 缺毛利率波动锚`] };
   const [c100, c80, c50, c20] = cuts;
   const sigma = fnum(summary?.stdev) ?? stdev(history);
-  let score = sigma <= c100 ? 100 : sigma <= c80 ? 80 : sigma <= c50 ? 50 : sigma <= c20 ? 20 : 0;
+  let score = linearScore(sigma, [
+    { x: 0, y: 100 },
+    { x: c100, y: 100 },
+    { x: c80, y: 80 },
+    { x: c50, y: 50 },
+    { x: c20, y: 20 },
+    { x: c20 * 2, y: 0 },
+  ]);
   const reasons = [
     `${history.length}年波动σ=${sigma.toFixed(2)}pct→${score}`,
     metricSource(profile, "margin_sigma"),
@@ -417,13 +686,27 @@ export function dividendDisciplineScore(payHistory) {
   for (let i = 0; i < rows.length - 1; i++) {
     if (Number(rows[i].dps) < Number(rows[i + 1].dps) * 0.95) cuts += 1;
   }
-  let score = cuts === 0 ? 100 : cuts === 1 ? 50 : cuts === 2 ? 20 : 0;
+  let score = linearScore(cuts, [
+    { x: 0, y: 100 },
+    { x: 1, y: 50 },
+    { x: 2, y: 20 },
+    { x: 3, y: 0 },
+    { x: 5, y: 0 },
+  ]);
   const paySigma = stdev(rows.map((row) => row.pay_pct));
   const reasons = [`DPS下调${cuts}次→${score}`];
   if (paySigma != null) {
-    if (paySigma > 30) score = capScore(score, 20, `派息率波动σ=${paySigma.toFixed(1)}pct，帽20`, reasons);
-    else if (paySigma > 20) score = capScore(score, 50, `派息率波动σ=${paySigma.toFixed(1)}pct，帽50`, reasons);
-    else if (paySigma > 10) score = capScore(score, 80, `派息率波动σ=${paySigma.toFixed(1)}pct，帽80`, reasons);
+    const sigmaCap = linearScore(paySigma, [
+      { x: 0, y: 100 },
+      { x: 10, y: 80 },
+      { x: 20, y: 50 },
+      { x: 30, y: 20 },
+      { x: 50, y: 0 },
+    ]);
+    if (sigmaCap != null && sigmaCap < score) {
+      score = sigmaCap;
+      reasons.push(`派息率波动σ=${paySigma.toFixed(1)}pct线性帽→${score}`);
+    }
   }
   if (rows.length < 5) score = capScore(score, 80, `${rows.length}年<5年，帽80`, reasons);
   if (rows.length >= 2 && Number(rows[0].dps) < Number(rows[1].dps) * 0.8) {
@@ -447,7 +730,14 @@ export function roeStabilityScore(values, f100 = "") {
   const cuts = profile.metrics.roe_cv?.cuts;
   if (!cuts) return { score: null, value: { history, median: med, cv }, reasons: [`f100=${f100 || "无"} 缺 ROE 稳定性锚`] };
   const [c100, c80, c50, c20] = cuts;
-  let score = cv <= c100 ? 100 : cv <= c80 ? 80 : cv <= c50 ? 50 : cv <= c20 ? 20 : 0;
+  let score = linearScore(cv, [
+    { x: 0, y: 100 },
+    { x: c100, y: 100 },
+    { x: c80, y: 80 },
+    { x: c50, y: 50 },
+    { x: c20, y: 20 },
+    { x: c20 * 2, y: 0 },
+  ]);
   const reasons = [
     `${history.length}年ROE波动CV=${cv.toFixed(2)}→${score}`,
     metricSource(profile, "roe_cv"),
@@ -495,6 +785,7 @@ function applyNumeric({
   peersValues,
   higherBetter,
   band,
+  knots,
   overheat,
   n,
   suspect,
@@ -509,13 +800,13 @@ function applyNumeric({
     d.reasons.push("哨兵未核，该维 —");
     return d;
   }
-  if (value == null || !band) {
+  if (value == null || (!knots && !band)) {
     d.reasons.push("缺字段");
     return d;
   }
   d.pct = higherBetter ? percentileHigher(value, peersValues) : percentileLower(value, peersValues);
-  d.pct_bucket = pctToBucket(d.pct);
-  const fin = finishScore({ pctBucket: d.pct_bucket, band, n, overheat });
+  d.pct_bucket = pctToScore(d.pct);
+  const fin = finishScore({ pct: d.pct, band: knots ? null : band, knots, value, n, overheat });
   d.score = fin.score;
   d.reasons.push(...fin.reasons);
   d.usable = d.score != null;
@@ -555,6 +846,7 @@ export function scoreCard(card, cards) {
     peersValues: peerVals((c) => fnum(c.pay_ratio)),
     higherBetter: true,
     band: payBand(card.f100, card.pay_ratio, fcfOk),
+    knots: payKnots(card.f100, fcfOk),
     overheat: overheatCap(card.pay_ratio, histPay(card)),
     n,
     suspect: gapHit(card, /派息率踩哨兵/),
@@ -567,6 +859,7 @@ export function scoreCard(card, cards) {
     peersValues: peerVals((c) => fnum(c.roe3)),
     higherBetter: true,
     band: roeBand(card.f100, card.roe3),
+    knots: roeKnots(card.f100),
     overheat: overheatCap(card.roe3, histRoe(card)),
     n,
     suspect: false,
@@ -585,6 +878,7 @@ export function scoreCard(card, cards) {
     peersValues: peerVals((c) => fnum(c.pb)),
     higherBetter: false,
     band: pbBand(card.f100, card.pb),
+    knots: pbKnots(card.f100),
     overheat: null,
     n,
     suspect: false,
@@ -598,10 +892,15 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => fcfMetric(c).value),
       higherBetter: true,
       band: fcfBand(fcf.value, fcf.minCover),
+      knots: fcfKnots(),
       overheat: null,
       n,
       suspect: fcf.suspect,
     });
+    if (fcf.minCover != null && fcf.minCover < 1 && dims.fcf.score != null && dims.fcf.score > 50) {
+      dims.fcf.score = 50;
+      dims.fcf.reasons.push("任一年cover<1，该维最多50");
+    }
     dims.debt = applyNumeric({
       id: "debt",
       weight: weights.debt,
@@ -609,6 +908,7 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => fnum(c.debt)),
       higherBetter: false,
       band: debtBand(card.f100, card.debt),
+      knots: debtKnots(card.f100),
       overheat: null,
       n,
       suspect: false,
@@ -635,6 +935,7 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => fnum(specialYear(c, 0).npl)),
       higherBetter: false,
       band: nplBand(y0.npl),
+      knots: nplKnots(),
       overheat: null,
       n,
       suspect: false,
@@ -646,13 +947,14 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => fnum(specialYear(c, 0).provision)),
       higherBetter: true,
       band: provisionBand(y0.provision),
+      knots: provisionKnots(),
       overheat: null,
       n,
       suspect: false,
     });
     const asset = dimBase("asset", weights.asset);
     if (nplD.usable && provD.usable) {
-      asset.score = snapGrade((nplD.score + provD.score) / 2);
+      asset.score = Math.round((nplD.score + provD.score) / 2);
       asset.usable = true;
       asset.value = { npl: y0.npl, provision: y0.provision };
       asset.reasons = [`不良档${nplD.score}+拨备档${provD.score}→${asset.score}`];
@@ -671,18 +973,37 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => fnum(specialYear(c, 0).cet1)),
       higherBetter: true,
       band: cet1Band(y0.cet1),
+      knots: cet1Knots(),
       overheat: null,
       n,
       suspect: false,
     });
-    const nim = nimTrendScore(y0.nim, y1.nim);
-    dims.nim_trend = {
-      ...dimBase("nim_trend", weights.nim_trend),
-      value: y0.nim != null && y1.nim != null ? y0.nim - y1.nim : null,
-      score: nim.score,
-      usable: nim.score != null,
-      reasons: [nim.zone === "missing" ? "净息差趋势缺两年" : `趋势${nim.zone}`],
-    };
+    const nim0 = fnum(y0.nim);
+    const nim1 = fnum(y1.nim);
+    const nimChg = nim0 != null && nim1 != null ? nim0 - nim1 : null;
+    const peerChgs = (pg.peers || []).map((c) => {
+      const a = fnum(specialYear(c, 0).nim);
+      const b = fnum(specialYear(c, 1).nim);
+      return a != null && b != null ? a - b : null;
+    });
+    const nimCap = nimTrendCap(nimChg, peerChgs);
+    dims.nim_trend = applyNumeric({
+      id: "nim_trend",
+      weight: weights.nim_trend,
+      value: nim0,
+      peersValues: peerVals((c) => fnum(specialYear(c, 0).nim)),
+      higherBetter: true,
+      band: nimLevelBand(nim0),
+      knots: nimLevelKnots(),
+      overheat: nimCap.cap != null ? nimCap : null,
+      n,
+      suspect: false,
+      extraReasons: [
+        nimChg == null ? "缺两年净息差" : `两年变动${nimChg.toFixed(2)}pct`,
+        nimCap.reason,
+      ].filter(Boolean),
+    });
+    if (dims.nim_trend.usable) dims.nim_trend.value = { nim: nim0, chg: nimChg };
     dims.roe_stability = directDim(
       "roe_stability",
       weights.roe_stability,
@@ -700,6 +1021,7 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => fnum(specialYear(c, 0).solvency)),
       higherBetter: true,
       band: solvencyBand(y0.solvency),
+      knots: solvencyKnots(),
       overheat: null,
       n,
       suspect: false,
@@ -735,7 +1057,12 @@ export function scoreCard(card, cards) {
       version: anchors.version,
       f100: anchors.industryKey || null,
       sources: anchors.sources,
-      pb_source: anchors.metrics.pb?.anchor != null ? "f100锚" : "仅同类分位（PB未校准）",
+      pb_source:
+        anchors.metrics.pb?.anchor != null
+          ? "f100锚"
+          : classPbAnchor(card.f100) != null
+            ? "类别软锚"
+            : "仅同类分位（PB未校准）",
     },
     dims,
     missing: result.missing,
@@ -758,8 +1085,16 @@ function eq(got, want, label, fails) {
 
 export function selfTest() {
   const fails = [];
-  eq(pctToBucket(80), 100, "pct-80", fails);
-  eq(pctToBucket(59), 50, "pct-59", fails);
+  eq(pctToScore(80), 80, "pct-80", fails);
+  eq(pctToScore(59), 59, "pct-59", fails);
+  eq(pctToBucket(59), 59, "pct-bucket-alias", fails);
+  eq(linearScore(-0.11, [
+    { x: -0.2, y: 0 },
+    { x: -0.08, y: 20 },
+    { x: 0, y: 50 },
+    { x: 0.08, y: 80 },
+    { x: 0.2, y: 100 },
+  ]), 15, "nim-linear-mid", fails);
   eq(snapGrade(70), 80, "snap-70", fails);
   eq(snapGrade(65), 50, "snap-65-tie-down", fails);
 
@@ -787,36 +1122,42 @@ export function selfTest() {
   eq(tightHigh.cap, null, "overheat-tight-band", fails);
 
   const small = finishScore({
-    pctBucket: 100,
-    band: { min: 80, max: 100, zone: "excellent" },
+    pct: 100,
+    knots: roeKnots("水力发电"),
+    value: 14,
     n: 3,
     overheat: { cap: null },
   });
-  eq(small.score, 80, "n<4-no-100", fails);
+  eq(small.score, 80, "n<4-cap80", fails);
 
   const clamped = finishScore({
-    pctBucket: 0,
-    band: { min: 50, max: 80, zone: "good" },
+    pct: 0,
+    knots: roeKnots("水力发电"),
+    value: 9,
     n: 6,
     overheat: { cap: null },
   });
-  eq(clamped.score, 50, "band-floor", fails);
+  if (clamped.score == null || clamped.score < 20 || clamped.score > 50) {
+    fails.push(`band-clamp ${clamped.score}`);
+  }
 
   const peak = finishScore({
-    pctBucket: 100,
-    band: { min: 80, max: 100, zone: "excellent" },
+    pct: 100,
+    knots: roeKnots("水力发电"),
+    value: 14,
     n: 6,
     overheat: { cap: 80, reason: "过热" },
   });
   eq(peak.score, 80, "overheat-after-pct", fails);
 
   const d100 = finishScore({
-    pctBucket: 100,
-    band: { min: 80, max: 100, zone: "excellent" },
+    pct: 100,
+    knots: roeKnots("水力发电"),
+    value: 14,
     n: 6,
     overheat: { cap: null },
   });
-  eq(d100.score, 100, "D-stable-can-100", fails);
+  eq(d100.score, 100, "top-peer-in-segment", fails);
 
   const durable = {
     roic_5y: {
@@ -888,6 +1229,11 @@ export function selfTest() {
   if (!bankScore.dims.roe_stability?.usable || Object.keys(bankScore.dims).length !== 8) {
     fails.push("bank-eight-numeric-dimensions");
   }
+  if (bankScore.dims.nim_trend.score < 80) fails.push(`bank-nim-level ${bankScore.dims.nim_trend.score}`);
+  if (bankScore.dims.pb.score < 50) fails.push(`bank-pb-class-band ${bankScore.dims.pb.score}`);
+  eq(nimTrendCap(-0.11, [-0.14, -0.13, -0.12, -0.1]).cap, null, "nim-inline-no-cap", fails);
+  eq(nimTrendCap(-0.21, [-0.1, -0.11, -0.12, -0.09]).cap, 20, "nim-idio-hard", fails);
+  eq(nimTrendCap(-0.12, [-0.04, -0.03, -0.05, -0.02]).cap, 80, "nim-idio-mild", fails);
 
   const insuranceBase = {
     f100: "保险Ⅱ",
@@ -912,12 +1258,12 @@ export function selfTest() {
   }
 
   const moutaiPb = pbBand("白酒Ⅱ", 6.68);
-  if (!moutaiPb || moutaiPb.max < 20) fails.push(`baijiu-pb-band ${JSON.stringify(moutaiPb)}`);
-  const wuliangyePb = pbBand("白酒Ⅱ", 2.43);
-  if (!wuliangyePb || wuliangyePb.min < 80) fails.push(`baijiu-pb-cheap ${JSON.stringify(wuliangyePb)}`);
+  if (!moutaiPb || moutaiPb.source !== "class") {
+    fails.push(`baijiu-pb-class ${JSON.stringify(moutaiPb)}`);
+  }
   const noAnchorPb = pbBand("半导体", 6.68);
-  if (!noAnchorPb || noAnchorPb.zone !== "peer-only-no-pb-anchor") {
-    fails.push(`pb-peer-only ${JSON.stringify(noAnchorPb)}`);
+  if (!noAnchorPb || noAnchorPb.source !== "class" || noAnchorPb.max !== 0) {
+    fails.push(`chip-pb-class-expensive ${JSON.stringify(noAnchorPb)}`);
   }
 
   const liquor = [
@@ -939,8 +1285,9 @@ export function selfTest() {
     roe_hist: [0, 1, 2, 3, 4].map((i) => ({ year: String(2025 - i), roe: card.roe3 - i * 0.2 })),
   }));
   const ms = scoreCard(liquor[0], liquor);
-  if (ms.dims.pb.score === 0) fails.push("moutai-pb-not-zero");
-  if (ms.dims.pb.score == null) fails.push("moutai-pb-missing");
+  const wy = scoreCard(liquor[1], liquor);
+  if (ms.dims.pb.score == null || wy.dims.pb.score == null) fails.push("liquor-pb-missing");
+  if (wy.dims.pb.score <= ms.dims.pb.score) fails.push(`pb-peer-rank wy=${wy.dims.pb.score} ms=${ms.dims.pb.score}`);
   const pg = peerGroup(liquor[0], liquor);
   if (pg.key !== "f100:白酒" || pg.n !== 4) fails.push(`baijiu-peer ${pg.key} n=${pg.n}`);
 

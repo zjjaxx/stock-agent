@@ -1,0 +1,48 @@
+{
+  "ts_code": null,
+  "adj": "backward",
+  "bands": {
+    "D": {
+      "period": "D",
+      "ok": true,
+      "as_of": "20260818",
+      "close": 13.61,
+      "mid": 14.157,
+      "upper": 15.3519,
+      "lower": 12.9621,
+      "bandwidth": 0.16881,
+      "bandwidth_pct": 16.88,
+      "window": 20,
+      "nbdev": 2,
+      "sample_count": 40
+    },
+    "W": {
+      "period": "W",
+      "ok": true,
+      "as_of": "20260818",
+      "close": 13.61,
+      "mid": 14.157,
+      "upper": 15.3519,
+      "lower": 12.9621,
+      "bandwidth": 0.16881,
+      "bandwidth_pct": 16.88,
+      "window": 20,
+      "nbdev": 2,
+      "sample_count": 40
+    },
+    "M": {
+      "period": "M",
+      "ok": true,
+      "as_of": "20260818",
+      "close": 13.61,
+      "mid": 14.3129,
+      "upper": 15.6458,
+      "lower": 12.9801,
+      "bandwidth": 0.186244,
+      "bandwidth_pct": 18.62,
+      "window": 24,
+      "nbdev": 2,
+      "sample_count": 40
+    }
+  }
+}

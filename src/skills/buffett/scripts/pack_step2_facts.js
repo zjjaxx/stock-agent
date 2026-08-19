@@ -14,6 +14,7 @@
 
 import fs from "node:fs";
 import { buffettTmp, parseArgs, readJsonFile } from "./opencli_json.js";
+import { formatDimAnchor, formatScoreAnchorFooter } from "./anchor_display.js";
 import { anchorProfile } from "./anchor_config.js";
 import { collectRedFlags, fcfMagnitudeGap } from "./red_lines.js";
 import { WEIGHTS, scoreCard } from "./score_numeric.js";
@@ -61,7 +62,7 @@ function industryRef(f100) {
   const pay = m.pay?.band ? `${m.pay.band[0]}%–${m.pay.band[1]}%` : "—";
   const debt = m.debt?.anchor == null ? "银行/保险通常不看负债率" : `约≤${m.debt.anchor}%`;
   const roe = m.roe?.anchor != null ? `约≥${m.roe.anchor}%` : "—";
-  const pb = m.pb?.anchor != null ? `约≤${m.pb.anchor}` : "仅同类分位（PB 未校准）";
+  const pb = formatDimAnchor("pb", f100).replace(/（knot 线性插值）$/, "");
   return {
     f100: profile.industryKey || f100 || "—",
     text: `f100=${profile.industryKey || "无"}；派息 ${pay}；ROE 中枢 ${roe}；PB ${pb}；负债 ${debt}`,
@@ -240,18 +241,20 @@ function renderScoreBlock(score) {
     );
   }
   L.push("");
-  L.push("| 维度 | 数值 | 分位 | 分位档 | 带宽 | 过热帽 | 脚本档 | 权重 |");
-  L.push("|---|---|---|---|---|---|---|---|");
+  L.push("| 维度 | 数值 | f100锚/标准值 | 分位 | 分位档 | 带宽 | 过热帽 | 脚本档 | 权重 |");
+  L.push("|---|---|---|---|---|---|---|---|---|");
   for (const id of dimOrder(score.kind)) {
     const d = score.dims[id];
     if (!d) continue;
     const band = d.band ? `[${d.band.min},${d.band.max}] ${d.band.zone}` : "—";
     const cap = d.overheat?.cap != null ? String(d.overheat.cap) : "—";
     const val = dimValueText(d);
+    const anchorText = formatDimAnchor(id, score.anchors?.f100);
     L.push(
-      `| ${d.label} | ${val} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.pct_bucket ?? "—"} | ${band} | ${cap} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
+      `| ${d.label} | ${val} | ${anchorText} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.pct_bucket ?? "—"} | ${band} | ${cap} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
     );
   }
+  L.push(`| **合计** | — | ${formatScoreAnchorFooter(score)} | — | — | — | — | **${score.total ?? "—"}${score.rating ?? ""}** | 100% |`);
   L.push(`- 脚本总分（红线未核）：${score.total == null ? "⚠️" : `${score.total}${score.rating}`}`);
   if (!score.numeric_ok) {
     L.push(`- 数字维缺口：${score.missing.join("、")} → ⚠️ 暂停终评`);

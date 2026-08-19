@@ -1,0 +1,40 @@
+{
+  "ts_code": null,
+  "adj": "backward",
+  "bands": {
+    "D": {
+      "period": "D",
+      "ok": true,
+      "as_of": "20260818",
+      "close": 44.1,
+      "mid": 45.9805,
+      "upper": 51.7826,
+      "lower": 40.1784,
+      "bandwidth": 0.252374,
+      "bandwidth_pct": 25.24,
+      "window": 20,
+      "nbdev": 2,
+      "sample_count": 80
+    },
+    "W": {
+      "period": "W",
+      "ok": true,
+      "as_of": "20260818",
+      "close": 44.1,
+      "mid": 45.9805,
+      "upper": 51.7826,
+      "lower": 40.1784,
+      "bandwidth": 0.252374,
+      "bandwidth_pct": 25.24,
+      "window": 20,
+      "nbdev": 2,
+      "sample_count": 80
+    },
+    "M": {
+      "period": "M",
+      "ok": false,
+      "error": "有效样本 19 < window=24，无法计算布林带",
+      "count": 19
+    }
+  }
+}

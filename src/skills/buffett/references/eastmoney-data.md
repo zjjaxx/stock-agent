@@ -18,7 +18,8 @@
 | `calibrate_anchors.js` | 低频校准：近 10 年公司中位 → 行业横截面锚，支持 `--resume`；产出 candidate 与复核报告 |
 | `approve_anchors.js` | 人工复核后将 candidate 写入 `anchors.approved.json`；无 `--yes` 仅预览 |
 | `red_lines.js` | Step2 红线机械提示 hard/soft（`--self-test`）；特别分红走 soft |
-| `fetch_kline_hfq.js` | Step3：后复权 K 线（adapter 优先，失败则 `push2his fqt=2`） |
+| `fetch_kline_hfq.js` | Step3：单票后复权 K 线（adapter 优先，失败则 `push2his fqt=2`） |
+| `fetch_kline_pool.js` | Step3：硬筛通过池全量日/周/月 K 线 + 布林（不论评级） |
 | `calc_bollinger.js` | Step3：后复权收盘算布林（唯一买卖路径） |
 | `fetch_valuation_history.js` | **已退出买卖流程**；可选研究用，禁止据此给仓位 |
 | `opencli_json.js` | 公共库，勿当入口 |
@@ -36,7 +37,8 @@ node $S/fetch_f10_bundle.js --pool ~/Desktop/temp/buffett_pass_pool.json -o ~/De
 node $S/pack_step2_facts.js \
   --step1 ~/Desktop/temp/buffett_step1.json --f10 ~/Desktop/temp/buffett_f10.json --bond ~/Desktop/temp/buffett_bond.json \
   -o ~/Desktop/temp/buffett_step2_facts.md --json ~/Desktop/temp/buffett_step2_facts.json
-# Agent 复核红线；总分直接取事实卡脚本结果；K 线只对 🟢/🟡 再抓；勿跑估值分位脚本做买卖
+# Agent 复核红线；总分直接取事实卡脚本结果；K 线对全部 M 只再抓（不论评级）；勿跑估值分位脚本做买卖
+node $S/fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json --resume
 ```
 
 ### 长期锚校准（建议年度更新，不进入日常链路）
@@ -55,7 +57,7 @@ node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_
 
 clist 默认走 `push2delay.eastmoney.com`（本机 `push2` 常 TLS 被掐，`SSL_ERROR_SYSCALL`）。请求顺序：Node `https`（IPv4）→ `curl -4 --http1.1`（不要 `--compressed`）→ 其它 push2 域名 → 最后才 browser。
 
-**PB 当前不校准**：上述抓取没有历史 PB 字段。有 f100 PB 锚则带宽+分位；无锚则 PB 维仅同类分位。
+**PB 当前不校准历史**：抓取没有历史 PB 字段。有 f100 PB 锚则带宽+分位；否则用类别软锚做带宽；再否则仅同类分位。
 
 ## Step 0
 

@@ -70,6 +70,13 @@ export const CLASS_META = {
   },
 };
 
+/** 无 f100 PB 锚时的类别软锚（不做十年校准，只给带宽）。 */
+export function classPbAnchor(f100) {
+  const { cls } = classifyIndustry({ f100 });
+  const pb = CLASS_META[cls]?.pb;
+  return Number.isFinite(Number(pb)) ? Number(pb) : null;
+}
+
 /** 先匹配更具体的行业名；同一字符串只取第一条命中。 */
 const RULES = [
   { cls: "E", re: /银行/, name: "银行", cycle: false },
@@ -185,6 +192,8 @@ export function selfTest() {
   if (liquor.cls !== "H") fails.push("白酒应为 H");
   if (liquor.cls === "A") fails.push("白酒不得进 A");
   if (CLASS_META.H.pb < 4) fails.push("白酒 PB 软锚过低");
+  if (classPbAnchor("银行") !== 0.8) fails.push("银行类别软锚应为 0.8");
+  if (classPbAnchor("白酒Ⅱ") !== 6) fails.push("白酒类别软锚应为 6");
   return fails;
 }
 

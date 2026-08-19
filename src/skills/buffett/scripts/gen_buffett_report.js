@@ -188,6 +188,10 @@ function crossCheck(card) {
     );
   } else if (card.fin_kind === "insurance") {
     bits.push("保险看偿付与投资收益趋势。");
+  } else if (card.fin_kind === "broker") {
+    bits.push(
+      `券商不套 FCF/毛利率；派息约 ${fmt(card.pay_ratio, 1)}%，看杠杆相对证券锚与 ROE 过牛熊稳不稳。`,
+    );
   } else {
     const cov = (card.fcf_cov || [])
       .slice(0, 2)
@@ -208,6 +212,7 @@ function risks(card) {
   const rs = [];
   if (card.red_hints?.length) rs.push(`红线：${card.red_hints.join("；")}`);
   if (card.fin_kind === "bank") rs.push("净息差收窄与资产质量压力。");
+  if (card.fin_kind === "broker") rs.push("券商业绩随市场波动，杠杆与资本约束。");
   if (card.score?.missing?.length) rs.push(`数据缺口：${card.score.missing.join("、")}。`);
   if (rs.length < 2) rs.push(`${card.f100 || "行业"}竞争或政策变化可能削弱优势。`);
   if (rs.length < 3) rs.push("宏观利率上行压缩高股息相对吸引力。");

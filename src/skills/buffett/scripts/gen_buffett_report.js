@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 /**
- * 桌面终报：读 Step2 事实卡 JSON，写 ~/Desktop/buffett-报告-YYYYMMDDHHmm.md
+ * 桌面终报骨架：读 Step2 事实卡 JSON，写 ~/Desktop/buffett-报告-YYYYMMDDHHmm.md
+ *
+ * 脚本只输出：§1 一览（每行业评分最高且布林到位、无 hard 红线）、§2 数字/技术/操作骨架、§3 硬筛剔除。
+ * 「巴菲特交叉验证」「主要风险」留空位，由 Agent 按 Buffett 视角逐票现写。
  *
  * 用法:
  *   node gen_buffett_report.js
@@ -25,6 +28,12 @@ function fmt(x, nd = 2) {
   if (x == null) return "—";
   if (typeof x === "number") return Number.isInteger(x) ? String(x) : x.toFixed(nd);
   return String(x);
+}
+
+function fmtYi(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "—";
+  return (Math.round(n * 100) / 100).toFixed(2);
 }
 
 function dimValueText(d) {
@@ -106,54 +115,91 @@ function loadBoll(tmpDir, code) {
   return result;
 }
 
+/** 相对半带宽：-1=下轨，0=中轨，+1=上轨。跌破下轨 < -1，升破上轨 > 1。 */
+function bandRelFromMid(b) {
+  const close = b?.close;
+  const mid = b?.mid;
+  const upper = b?.upper;
+  const lower = b?.lower;
+  if (![close, mid, upper, lower].every(Number.isFinite)) return null;
+  if (close >= mid) {
+    const half = upper - mid;
+    if (!(half > 0)) return close > mid ? Infinity : 0;
+    return (close - mid) / half;
+  }
+  const half = mid - lower;
+  if (!(half > 0)) return close < mid ? -Infinity : 0;
+  return (close - mid) / half;
+}
+
+/** 略高于中轨须同时：相对半带宽 ≤ 1/4，且相对中轨股价 ≤ 5%。宽带宽时 5% 封顶，窄带宽时 0.25 封顶。 */
+const MONTH_UPPER_SLACK = 0.25;
+const MONTH_PRICE_SLACK = 0.05;
+
+function pricePctFromMid(b) {
+  const close = b?.close;
+  const mid = b?.mid;
+  if (!Number.isFinite(close) || !Number.isFinite(mid) || !(mid > 0)) return null;
+  return (close - mid) / mid;
+}
+
+function isMonthNearMid(bM) {
+  const pos = bandRelFromMid(bM);
+  if (pos == null) return false;
+  if (pos <= 0) return true;
+  const pct = pricePctFromMid(bM);
+  return pos <= MONTH_UPPER_SLACK && pct != null && pct <= MONTH_PRICE_SLACK;
+}
+
 function zoneLabel(b) {
   if (!b?.ok) return b?.error || "无法计算";
   if (b.bandwidth_pct != null && b.bandwidth_pct < 5) return `带宽${b.bandwidth_pct}%（<5%观望）`;
+  const pos = bandRelFromMid(b);
   if (b.close <= b.lower) return "下轨附近";
   if (b.close >= b.upper) return "上轨附近";
-  if (b.close <= b.mid) return "中～下轨";
+  if (pos != null && pos <= 0) return "中～下轨";
+  if (isMonthNearMid(b) && pos > 0) return "中轨附近（略上）";
   if (b.close > b.mid && b.close < b.upper) return "中～上轨（持有区）";
   return "中轨附近";
 }
 
-function bollSignal(bD, bW, bM, rating) {
+/** 仅由日/周/月布林技术位判定是否满足可尝试批量建仓。 */
+function bollSignal(bD, bW, bM) {
   if (!bD?.ok || !bW?.ok || !bM?.ok) {
-    return { signal: "K线不足，观望", batchOk: false };
+    return { signal: "K线不足，观望", batchOk: false, weekResonance: false };
   }
   if (bD.bandwidth_pct < 5) {
-    return { signal: "日线带宽<5%，观望", batchOk: false };
+    return { signal: "日线带宽<5%，观望", batchOk: false, weekResonance: false };
   }
   const dayMidLow = bD.close >= bD.lower && bD.close <= bD.mid;
-  const monthNearMid =
-    Math.abs(bM.close - bM.mid) / bM.mid <= 0.05 ||
-    (bM.close >= bM.lower && bM.close <= bM.mid * 1.05);
+  const monthNearMid = isMonthNearMid(bM);
+  const monthHold = bandRelFromMid(bM) > 0 && !monthNearMid;
   const weekNearLow = bW.close <= bW.lower * 1.03;
   if (monthNearMid && dayMidLow) {
     return {
       signal: weekNearLow ? "可尝试批量建仓（周线共振）" : "可尝试批量建仓（周线未到下轨）",
-      batchOk: rating === "🟢",
+      batchOk: true,
       weekResonance: weekNearLow,
     };
   }
-  if (bM.close > bM.mid * 1.05) return { signal: "月线持有区，未到买点", batchOk: false };
-  if (!dayMidLow) return { signal: "日线未到中～下轨", batchOk: false };
-  if (!monthNearMid) return { signal: "月线未到中轨附近", batchOk: false };
-  return { signal: "观望", batchOk: false };
+  if (monthHold) return { signal: "月线持有区，未到买点", batchOk: false, weekResonance: false };
+  if (!dayMidLow) return { signal: "日线未到中～下轨", batchOk: false, weekResonance: false };
+  if (!monthNearMid) return { signal: "月线未到中轨附近", batchOk: false, weekResonance: false };
+  return { signal: "观望", batchOk: false, weekResonance: false };
 }
 
-function techBlock(card, boll) {
-  const rating = card.score?.rating;
+function techBlock(boll) {
   const fmtB = (b, name) => {
     if (!b?.ok) return `${name}：${b?.error || "无法计算"}`;
     return `${name}：收盘(后复权)${b.close}｜中轨${b.mid}｜上${b.upper}｜下${b.lower}｜带宽${b.bandwidth_pct}%｜${zoneLabel(b)}`;
   };
-  const sig = bollSignal(boll.D, boll.W, boll.M, rating);
+  const sig = bollSignal(boll.D, boll.W, boll.M);
   const near = boll.W?.mid;
   const opt =
     boll.W?.upper != null && boll.M?.upper != null
       ? Math.min(boll.W.upper, boll.M.upper)
       : boll.W?.upper ?? boll.M?.upper;
-  return [
+  const text = [
     fmtB(boll.D, "日线"),
     fmtB(boll.W, "周线"),
     fmtB(boll.M, "月线"),
@@ -165,58 +211,82 @@ function techBlock(card, boll) {
   ]
     .filter(Boolean)
     .join("\n");
+  return { text, sig };
 }
 
-function actionBlock(card, sig) {
-  const r = card.score?.rating;
-  if (r === "🟢") {
-    if (sig.batchOk && sig.weekResonance) return "今日可执行：批量建仓 ≤15%总资金。";
-    if (sig.batchOk) return "可尝试批量建仓（周线未共振）≤15%总资金。";
-    return "观望排队：质地够格但布林未到可尝试批量建仓条件。";
-  }
-  if (r === "🟡") return "🟡 不新建仓；仅用户已持仓可持有。";
-  if (r === "🟠") return "观察；已持仓可持有；禁止新建仓。";
-  if (r === "🔴") return "回避新建仓；已持仓建议复核减持/清仓。";
-  return "数据缺口，暂停评级与操作。";
+/** 写入今日建仓建议：布林到位 + 本行业评分居首 + 无 hard 红线 + 非⚠️。 */
+function hasHardRed(card) {
+  return Array.isArray(card.red_hints) && card.red_hints.length > 0;
 }
 
-function crossCheck(card) {
-  const bits = [];
-  if (card.fin_kind === "bank") {
-    bits.push(
-      `银行分红看资产质量与核充；派息约 ${fmt(card.pay_ratio, 1)}%，分红纪律稳定与否须持续跟踪。`,
-    );
-  } else if (card.fin_kind === "insurance") {
-    bits.push("保险看偿付与投资收益趋势。");
-  } else if (card.fin_kind === "broker") {
-    bits.push(
-      `券商不套 FCF/毛利率；派息约 ${fmt(card.pay_ratio, 1)}%，看杠杆相对证券锚与 ROE 过牛熊稳不稳。`,
-    );
-  } else {
-    const cov = (card.fcf_cov || [])
-      .slice(0, 2)
-      .map((x) => `${x.year}覆盖${fmt(x.cover, 2)}`)
-      .join("、");
-    bits.push(cov ? `FCF分红覆盖：${cov}。` : "FCF覆盖待核。");
-  }
-  const r = card.score?.rating;
-  bits.push(
-    r === "🟢" || r === "🟡"
-      ? "买点只认布林技术位，不用估值分位替代。"
-      : "总分或红线未过关，不宜作为长线收息首选。",
+function f100Key(card) {
+  return (
+    String(card.f100 || "")
+      .replace(/[ⅠⅡⅢIVX\s]/g, "")
+      .trim() || "未知行业"
   );
-  return bits.join(" ");
 }
 
-function risks(card) {
-  const rs = [];
-  if (card.red_hints?.length) rs.push(`红线：${card.red_hints.join("；")}`);
-  if (card.fin_kind === "bank") rs.push("净息差收窄与资产质量压力。");
-  if (card.fin_kind === "broker") rs.push("券商业绩随市场波动，杠杆与资本约束。");
-  if (card.score?.missing?.length) rs.push(`数据缺口：${card.score.missing.join("、")}。`);
-  if (rs.length < 2) rs.push(`${card.f100 || "行业"}竞争或政策变化可能削弱优势。`);
-  if (rs.length < 3) rs.push("宏观利率上行压缩高股息相对吸引力。");
-  return rs.slice(0, 3);
+function canSuggestToday(card, sig) {
+  if (!sig?.batchOk) return false;
+  if (hasHardRed(card)) return false;
+  if (card.score?.rating === "⚠️") return false;
+  if (card.score?.total == null) return false;
+  return true;
+}
+
+function pickIndustryWinners(rows) {
+  const byInd = new Map();
+  for (const row of rows) {
+    const key = f100Key(row.c);
+    const prev = byInd.get(key);
+    if (!prev) {
+      byInd.set(key, row);
+      continue;
+    }
+    const ta = row.c.score?.total ?? -1;
+    const tb = prev.c.score?.total ?? -1;
+    if (ta > tb) {
+      byInd.set(key, row);
+      continue;
+    }
+    if (ta < tb) continue;
+    const wr = Number(row.sig.weekResonance) - Number(prev.sig.weekResonance);
+    if (wr > 0) byInd.set(key, row);
+    else if (wr === 0 && (row.c.bond_ratio || 0) > (prev.c.bond_ratio || 0)) byInd.set(key, row);
+  }
+  return [...byInd.values()];
+}
+
+function rankTodayWinners(a, b) {
+  return (
+    Number(b.sig.weekResonance) - Number(a.sig.weekResonance) ||
+    (b.c.bond_ratio || 0) - (a.c.bond_ratio || 0) ||
+    String(a.c.code).localeCompare(String(b.c.code))
+  );
+}
+
+function actionBlock(card, sig, { inToday, isIndustryWinner } = {}) {
+  if (inToday) {
+    return sig.weekResonance
+      ? "建仓建议（同业到位候选中评分最高 + 布林到位，周线共振）≤15%总资金"
+      : "建仓建议（同业到位候选中评分最高 + 布林到位，周线未到下轨）≤15%总资金";
+  }
+  if (sig.batchOk && hasHardRed(card)) {
+    return `观望：布林到位，hard红线不入今日建议：${card.red_hints.join("；")}。`;
+  }
+  if (sig.batchOk && card.score?.rating === "⚠️") {
+    return "观望：布林到位，数据缺口不入今日建议。";
+  }
+  if (sig.batchOk && isIndustryWinner) {
+    return "观望：本行业到位候选中评分最高且布林到位，但今日名额已满（周线共振→股息/国债比排队）。";
+  }
+  if (sig.batchOk) {
+    return "观望：布林到位，同业已有更高分票入选（或同业第一分未到技术位）。";
+  }
+  if (card.score?.rating === "⚠️") return `观望：${sig.signal}。数据缺口，暂停终评。`;
+  if (hasHardRed(card)) return `观望：${sig.signal}。hard红线：${card.red_hints.join("；")}。`;
+  return `观望：${sig.signal}`;
 }
 
 function redReview(card) {
@@ -264,26 +334,29 @@ function main(argv = process.argv.slice(2)) {
   });
 
   const bollCache = {};
-  for (const c of cards) bollCache[c.code] = loadBoll(args.tmp, c.code);
-  const gy = cards.filter((c) => c.score?.rating === "🟢" || c.score?.rating === "🟡");
-
-  const todayBuys = [];
-  const queue = [];
-  for (const c of gy) {
-    const boll = bollCache[c.code] || { D: null, W: null, M: null };
-    const sig = bollSignal(boll.D, boll.W, boll.M, c.score.rating);
-    if (c.score.rating === "🟢" && sig.batchOk) {
-      todayBuys.push({ c, sig, boll });
-    } else {
-      let why = c.score.rating === "🟡" ? "🟡 不新建仓" : "未到可尝试批量建仓条件";
-      if (sig.signal.includes("带宽")) why += "；日线带宽过窄";
-      else if (sig.signal.includes("持有区")) why += "；月线持有区";
-      else if (sig.signal.includes("日线")) why += "；日线未到中～下轨";
-      else if (sig.signal.includes("月线")) why += "；月线未到中轨附近";
-      else why += `；${sig.signal}`;
-      queue.push(`${c.code} ${c.name}（${c.score.rating} ${c.score.total}分）：${why}`);
-    }
+  const sigCache = {};
+  for (const c of cards) {
+    const boll = loadBoll(args.tmp, c.code);
+    bollCache[c.code] = boll;
+    sigCache[c.code] = bollSignal(boll.D, boll.W, boll.M);
   }
+
+  const eligible = cards
+    .filter((c) => canSuggestToday(c, sigCache[c.code]))
+    .map((c) => ({ c, sig: sigCache[c.code], boll: bollCache[c.code] }));
+  const industryWinners = pickIndustryWinners(eligible);
+  const winnerCodes = new Set(industryWinners.map(({ c }) => c.code));
+  const todayBuys = [...industryWinners].sort(rankTodayWinners).slice(0, 10);
+
+  const todayCodes = new Set(todayBuys.map(({ c }) => c.code));
+  const queue = cards
+    .filter((c) => !todayCodes.has(c.code))
+    .map((c) => ({ c, sig: sigCache[c.code] }))
+    .sort(
+      (a, b) =>
+        (b.c.score?.total || 0) - (a.c.score?.total || 0) ||
+        (b.c.bond_ratio || 0) - (a.c.bond_ratio || 0),
+    );
 
   const now = new Date();
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
@@ -298,31 +371,39 @@ function main(argv = process.argv.slice(2)) {
     `国债10Y：${data.bond.yield_pct}%（${data.bond.source}，${data.bond.fetched_at}）｜股息门槛：≥国债×2 = ${(data.bond.yield_pct * 2).toFixed(2)}%`,
   );
   L.push(
-    `候选池：N=${step1.n_pool}（${xuangu.source || "xuangu-result-dom"}）→ 硬筛通过 M=${step1.n_pass} → 今日可执行 K=${K}`,
+    `候选池：N=${step1.n_pool}（${xuangu.source || "xuangu-result-dom"}）→ 硬筛通过 M=${step1.n_pass} → 今日建仓建议 K=${K}`,
   );
   L.push("");
-  L.push(`## 1. 今日推荐一览（K=${K}｜排队 Q=${queue.length}）`);
+  L.push(`## 1. 今日建仓建议一览（K=${K}｜排队 Q=${queue.length}）`);
+  L.push("");
+  L.push("本次操作为「每个 f100 里，布林到位且无 hard 红线/⚠️ 的票中取总分最高」。跨行业不比总分；行业数>10 时按周线共振→股息/国债比取前 10。");
   L.push("");
   if (K === 0) {
-    L.push("**今日无新开**：无 🟢 票满足「月线中轨附近 + 日线中～下轨」且各周期带宽≥5%。");
+    L.push("**今日无建仓建议**：无票同时满足「该行业布林到位候选中评分最高 + 月线中轨附近 + 日线中～下轨 + 无 hard 红线」。");
+    L.push("");
   }
-  L.push("");
   L.push("| 代码 | 简称 | 评级 | 现价 | TTM股息率 | 信号来源 | 本次操作 | 建议仓位(总资金) | 目标价 |");
   L.push("|---|---|---|---|---|---|---|---|---|");
   if (K === 0) {
-    L.push("| — | — | — | — | — | — | 今日无新开 | — | — |");
+    L.push("| — | — | — | — | — | — | 今日无建仓建议 | — | — |");
   } else {
-    for (const { c, boll } of todayBuys) {
+    for (const { c } of todayBuys) {
       L.push(
-        `| ${c.code} | ${c.name} | ${c.score.rating} | ${c.price} | ${c.div}% | 布林带 | 批量建仓 | ≤15% | 见§2 |`,
+        `| ${c.code} | ${c.name} | ${c.score.rating} | ${c.price} | ${c.div}% | 布林带 | 建仓建议（同业到位最高分+布林） | ≤15% | 见§2 |`,
       );
     }
   }
   L.push("");
   L.push("**排队：**");
   L.push("");
-  if (queue.length) for (const q of queue) L.push(`- ${q}`);
-  else L.push("- （无 🟢/🟡 排队票）");
+  if (queue.length) {
+    for (const { c, sig } of queue) {
+      const total = c.score?.total ?? "—";
+      L.push(`- ${c.code} ${c.name}（${c.score.rating} ${total}分）：${sig.signal}`);
+    }
+  } else {
+    L.push("- （无排队票）");
+  }
   L.push("");
   L.push(`## 2. 个股全评（全部 M=${cards.length} 只）`);
   L.push("");
@@ -333,7 +414,7 @@ function main(argv = process.argv.slice(2)) {
     L.push(`#### ${c.code} ${c.name}（评级 ${rating}｜加权${total}分）`);
     L.push("");
     L.push(
-      `**基础信息**：市值 ${c.mkt_yi} 亿；企业性质 ${c.ent_hint}；东财 f100=${c.f100}；现价 ${c.price}；${taxDiv(c.div)}；股息/国债比 ${fmt(c.bond_ratio, 2)}；连续现金分红 ${c.div_streak} 年。`,
+      `**基础信息**：市值 ${fmtYi(c.mkt_yi)} 亿；东财 f100=${c.f100}；现价 ${c.price}；${taxDiv(c.div)}；股息/国债比 ${fmt(c.bond_ratio, 2)}；连续现金分红 ${c.div_streak} 年。`,
     );
     L.push("");
     L.push("**评分表**（全部采用脚本结果）：");
@@ -344,18 +425,17 @@ function main(argv = process.argv.slice(2)) {
     L.push(`**综合评级**：${rating}（脚本总分 ${total}）。`);
     L.push("");
     const boll = bollCache[c.code] || { D: null, W: null, M: null };
-    const sig = bollSignal(boll.D, boll.W, boll.M, rating);
+    const { text: techText, sig } = techBlock(boll);
     L.push("**技术位**：");
-    L.push(techBlock(c, boll));
+    L.push(techText);
     L.push("");
     L.push(`**预期目标价**：${boll.D?.ok ? "见技术位（操作采用技术档）" : "—"}`);
     L.push("");
-    L.push(`**操作**：${actionBlock(c, sig)}`);
+    L.push(`**操作**：${actionBlock(c, sig, { inToday: todayCodes.has(c.code), isIndustryWinner: winnerCodes.has(c.code) })}`);
     L.push("");
-    L.push(`**巴菲特交叉验证**：${crossCheck(c)}`);
+    L.push("**巴菲特交叉验证**：（Agent 按 Buffett 视角现写，2–4 句）");
     L.push("");
-    L.push("**主要风险**：");
-    risks(c).forEach((r, i) => L.push(`${i + 1}. ${r}`));
+    L.push("**主要风险**：（Agent 现写 1–3 条，须对本票特异）");
     L.push("");
   }
 
@@ -373,6 +453,19 @@ function main(argv = process.argv.slice(2)) {
   console.log(`K=${K} queue=${queue.length}`);
   return 0;
 }
+
+export {
+  MONTH_PRICE_SLACK,
+  MONTH_UPPER_SLACK,
+  bandRelFromMid,
+  bollSignal,
+  canSuggestToday,
+  isMonthNearMid,
+  main,
+  pickIndustryWinners,
+  pricePctFromMid,
+  zoneLabel,
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   process.exit(main());

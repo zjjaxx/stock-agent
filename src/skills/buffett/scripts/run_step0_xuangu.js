@@ -51,6 +51,14 @@ function findRef(session, { text = null, css = null } = {}) {
   return data.entries || [];
 }
 
+function findRefSoft(session, opts) {
+  try {
+    return findRef(session, opts);
+  } catch {
+    return [];
+  }
+}
+
 function clickRef(session, ref) {
   const proc = oc(session, ["click", String(ref)]);
   if (proc.returncode !== 0) {
@@ -351,11 +359,6 @@ function scrapeResultDom(session) {
   }
 
   if (!pool.length) throw new Error("DOM 扫表未解析出有效代码");
-  if (totalHint != null && pool.length !== totalHint) {
-    throw new Error(
-      `扫表条数 ${pool.length} ≠ 页内「共${totalHint}只」，可能分页未加载全`,
-    );
-  }
 
   return {
     source: "xuangu-result-dom",
@@ -369,13 +372,136 @@ function scrapeResultDom(session) {
   };
 }
 
+function pagerDisabled(entry) {
+  const cls = `${entry.class || ""} ${entry.attrs?.class || ""}`;
+  if (/disabled|is-disabled/i.test(cls)) return true;
+  const aria = entry.attrs?.["aria-disabled"] ?? entry.attrs?.disabled;
+  return aria === true || aria === "true";
+}
+
+function firstTableCode(session) {
+  const raw = evalJs(
+    session,
+    `(function(){
+  var f=document.querySelector(".el-table__fixed-body-wrapper")||document.querySelector(".el-table__fixed .el-table__body");
+  var tr=f&&f.querySelector("tr");
+  if(!tr) return "";
+  var tds=tr.querySelectorAll("td");
+  return (tds[2]&&tds[2].innerText||"").trim();
+})()`,
+  );
+  return (raw.trim().split(/\r?\n/).pop() || "").trim();
+}
+
+function waitTableCodeChange(session, prevCode, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    sleep(400);
+    const now = firstTableCode(session);
+    if (now && now !== prevCode) return now;
+  }
+  throw new Error(`翻页后表格未变化，首页代码仍为 ${prevCode || "空"}`);
+}
+
+function clickNextResultPage(session) {
+  const entries = findRef(session, { text: "下一页" });
+  let next = null;
+  for (const e of entries) {
+    if (String(e.text || "").replace(/\s/g, "") === "下一页") {
+      next = e;
+      break;
+    }
+  }
+  if (!next || pagerDisabled(next)) return false;
+  clickRef(session, Number(next.ref));
+  return true;
+}
+
+function mergePool(base, extra) {
+  const seen = new Set(base.map((r) => r.code));
+  const out = [...base];
+  for (const row of extra) {
+    if (!row.code || seen.has(row.code)) continue;
+    seen.add(row.code);
+    out.push(row);
+  }
+  return out;
+}
+
+function clickCss(session, css, nth = null) {
+  const args = ["click", css];
+  if (nth != null) args.push("--nth", String(nth));
+  const proc = oc(session, args);
+  if (proc.returncode !== 0) {
+    throw new Error(`click ${css} nth=${nth} failed: ${(proc.stderr || proc.stdout).slice(0, 300)}`);
+  }
+}
+
+function setResultPageSize(session, size = 100) {
+  const nth = { 20: 0, 50: 1, 100: 2, 200: 3 }[size];
+  if (nth == null) throw new Error(`不支持的分页大小 ${size}`);
+  clickCss(session, ".el-pagination .el-input__inner");
+  sleep(400);
+  clickCss(session, ".el-select-dropdown__item", nth);
+}
+
+function waitRowCountAtLeast(session, want, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const n = Number(
+      evalJs(
+        session,
+        '(function(){var f=document.querySelector(".el-table__fixed-body-wrapper")||document.querySelector(".el-table__fixed .el-table__body");return String(f?f.querySelectorAll("tr").length:0);})()',
+      )
+        .trim()
+        .split(/\r?\n/)
+        .pop(),
+    );
+    if (n >= want) return n;
+    sleep(400);
+  }
+  throw new Error(`等待表格至少 ${want} 行超时`);
+}
+
+function scrapeAllResultPages(session) {
+  let scraped = scrapeResultDom(session);
+  let pool = scraped.pool;
+  const totalHint = scraped.totalHint;
+  if (totalHint != null && pool.length === totalHint) {
+    return { ...scraped, pool, n: pool.length, pages: 1 };
+  }
+  if (totalHint != null && totalHint > pool.length) {
+    setResultPageSize(session, totalHint > 100 ? 200 : 100);
+    waitRowCountAtLeast(session, totalHint);
+    scraped = scrapeResultDom(session);
+    pool = scraped.pool;
+  }
+  let pages = 1;
+  while (totalHint != null && pool.length < totalHint && pages < 20) {
+    const prevCode = pool[0]?.code;
+    if (!clickNextResultPage(session)) break;
+    waitTableCodeChange(session, prevCode);
+    const more = scrapeResultDom(session);
+    const before = pool.length;
+    pool = mergePool(pool, more.pool);
+    pages += 1;
+    if (pool.length === before) break;
+  }
+  if (totalHint != null && pool.length !== totalHint) {
+    throw new Error(
+      `扫表条数 ${pool.length} ≠ 页内「共${totalHint}只」，可能分页未加载全`,
+    );
+  }
+  return { ...scraped, pool, n: pool.length, pages };
+}
+
 function captureResultDom(session, outPath, extra = {}) {
   // 若还在编辑页，点去选股
   if (!currentUrl(session).includes("/Result")) {
     clickGoSelect(session);
   }
   const url = waitResultPage(session);
-  const scraped = scrapeResultDom(session);
+  const scraped = scrapeAllResultPages(session);
   const payload = {
     ...scraped,
     chips: chips(session),

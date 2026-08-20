@@ -90,9 +90,11 @@ export function formatDimAnchor(dimId, f100 = "") {
       return `水平 0.7–1.0–1.3–1.6–2.1→0–20–50–80–100；两年变动弱于同业中位才封顶${LIN}`;
 
     case "solvency":
-      return `偿付 120–150–180–250–400→10–20–50–80–100${LIN}`;
+      return `偿付 100–150–180–220–280→10–50–80–90–90（超额封顶90）${LIN}`;
 
     case "solvency_trend":
+      return `自身变动−同业中位（pct）；knot -25–-15–-8–0–10–20→0–20–50–70–90–100；同业<3 用自身变动线性${LIN}`;
+
     case "roi_trend":
       return `相对变动 -15%–-5%–0–5%–15%→0–20–50–80–100${LIN}`;
 

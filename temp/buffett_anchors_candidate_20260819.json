@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "status": "candidate",
+  "version": "candidate-2026-08-19",
+  "generated_at": "2026-08-19T16:13:13.035Z",
+  "source_approved_version": "approved-2026-08-17",
+  "lookback_years": 10,
+  "method": "median_of_company_medians",
+  "min_companies": 2,
+  "pb_calibration_enabled": false,
+  "industries": {}
+}

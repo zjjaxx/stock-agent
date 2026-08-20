@@ -5,13 +5,13 @@
     "D": {
       "period": "D",
       "ok": true,
-      "as_of": "20260818",
-      "close": 3579.47,
-      "mid": 3600.175,
-      "upper": 3739.6492,
-      "lower": 3460.7008,
-      "bandwidth": 0.077482,
-      "bandwidth_pct": 7.75,
+      "as_of": "20260819",
+      "close": 3666.19,
+      "mid": 3605.6825,
+      "upper": 3746.4438,
+      "lower": 3464.9212,
+      "bandwidth": 0.078077,
+      "bandwidth_pct": 7.81,
       "window": 20,
       "nbdev": 2,
       "sample_count": 520
@@ -19,30 +19,30 @@
     "W": {
       "period": "W",
       "ok": true,
-      "as_of": "20260818",
-      "close": 3579.47,
-      "mid": 3514.552,
-      "upper": 3796.8249,
-      "lower": 3232.2791,
-      "bandwidth": 0.160631,
-      "bandwidth_pct": 16.06,
+      "as_of": "20260819",
+      "close": 3666.19,
+      "mid": 3518.888,
+      "upper": 3807.6071,
+      "lower": 3230.1689,
+      "bandwidth": 0.164097,
+      "bandwidth_pct": 16.41,
       "window": 20,
       "nbdev": 2,
-      "sample_count": 112
+      "sample_count": 111
     },
     "M": {
       "period": "M",
       "ok": true,
-      "as_of": "20260818",
-      "close": 3579.47,
-      "mid": 3646.0017,
-      "upper": 4156.7518,
-      "lower": 3135.2515,
-      "bandwidth": 0.28017,
-      "bandwidth_pct": 28.02,
+      "as_of": "20260819",
+      "close": 3666.19,
+      "mid": 3649.615,
+      "upper": 4159.6578,
+      "lower": 3139.5722,
+      "bandwidth": 0.279505,
+      "bandwidth_pct": 27.95,
       "window": 24,
       "nbdev": 2,
-      "sample_count": 27
+      "sample_count": 26
     }
   }
 }

@@ -5,17 +5,9 @@
   "period": "day",
   "adjust": "backward",
   "fqt": 2,
-  "source": "eastmoney kline --adjust backward",
+  "source": "eastmoney push2his fqt=2 (browser)",
   "count": 520,
   "bars": [
-    {
-      "date": "2024-06-28",
-      "open": 81.11,
-      "close": 81.5,
-      "high": 81.92,
-      "low": 80.82,
-      "volume": 620202
-    },
     {
       "date": "2024-07-01",
       "open": 81.54,
@@ -4167,6 +4159,14 @@
       "high": 92.76,
       "low": 92.15,
       "volume": 766819
+    },
+    {
+      "date": "2026-08-19",
+      "open": 92.89,
+      "close": 93.77,
+      "high": 93.77,
+      "low": 92.54,
+      "volume": 1440792
     }
   ]
 }

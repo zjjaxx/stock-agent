@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "status": "approved",
-  "version": "approved-2026-08-17",
-  "generated_at": "2026-08-17T17:33:03.504Z",
+  "version": "approved-2026-08-20",
+  "generated_at": "2026-08-19T16:13:13.035Z",
   "lookback_years": 10,
   "method": "median_of_company_medians",
-  "min_companies": 8,
+  "min_companies": 2,
   "pb_calibration_enabled": false,
   "industries": {
     "水力发电": {
@@ -2308,6 +2308,6 @@
       }
     }
   },
-  "approved_at": "2026-08-17T23:43:28.166Z",
-  "source_candidate": "/Users/zhengjiajun/Desktop/temp/buffett_anchors_candidate_20260817.json"
+  "approved_at": "2026-08-20T00:50:20.579Z",
+  "source_candidate": "/Users/zhengjiajun/Desktop/temp/buffett_anchors_candidate_20260819.json"
 }

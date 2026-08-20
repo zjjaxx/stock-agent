@@ -48,6 +48,14 @@
     "source": "eastmoney-ulist-f100"
   },
   {
+    "code": "600011",
+    "market": "SH",
+    "name": "华能国际",
+    "f100": "电力",
+    "f100_raw": "电力",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
     "code": "601166",
     "market": "SH",
     "name": "兴业银行",
@@ -61,14 +69,6 @@
     "name": "光大银行",
     "f100": "银行",
     "f100_raw": "银行Ⅱ",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
-    "code": "600011",
-    "market": "SH",
-    "name": "华能国际",
-    "f100": "电力",
-    "f100_raw": "电力",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -88,11 +88,11 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "000001",
-    "market": "SZ",
-    "name": "平安银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
+    "code": "600809",
+    "market": "SH",
+    "name": "山西汾酒",
+    "f100": "白酒",
+    "f100_raw": "白酒Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -104,19 +104,19 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "601229",
-    "market": "SH",
-    "name": "上海银行",
+    "code": "000001",
+    "market": "SZ",
+    "name": "平安银行",
     "f100": "银行",
     "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600809",
+    "code": "601229",
     "market": "SH",
-    "name": "山西汾酒",
-    "f100": "白酒",
-    "f100_raw": "白酒Ⅱ",
+    "name": "上海银行",
+    "f100": "银行",
+    "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -128,19 +128,19 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600036",
-    "market": "SH",
-    "name": "招商银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
     "code": "601318",
     "market": "SH",
     "name": "中国平安",
     "f100": "保险",
     "f100_raw": "保险Ⅱ",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
+    "code": "600036",
+    "market": "SH",
+    "name": "招商银行",
+    "f100": "银行",
+    "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -168,27 +168,19 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "601998",
-    "market": "SH",
-    "name": "中信银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
-    "code": "600919",
-    "market": "SH",
-    "name": "江苏银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
     "code": "601336",
     "market": "SH",
     "name": "新华保险",
     "f100": "保险",
     "f100_raw": "保险Ⅱ",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
+    "code": "601998",
+    "market": "SH",
+    "name": "中信银行",
+    "f100": "银行",
+    "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -200,19 +192,19 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "601328",
-    "market": "SH",
-    "name": "交通银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
     "code": "002736",
     "market": "SZ",
     "name": "国信证券",
     "f100": "证券",
     "f100_raw": "证券Ⅱ",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
+    "code": "601328",
+    "market": "SH",
+    "name": "交通银行",
+    "f100": "银行",
+    "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -264,27 +256,19 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600926",
-    "market": "SH",
-    "name": "杭州银行",
+    "code": "002142",
+    "market": "SZ",
+    "name": "宁波银行",
     "f100": "银行",
     "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600028",
+    "code": "600926",
     "market": "SH",
-    "name": "中国石化",
-    "f100": "炼化及贸易",
-    "f100_raw": "炼化及贸易",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
-    "code": "600660",
-    "market": "SH",
-    "name": "福耀玻璃",
-    "f100": "汽车零部件",
-    "f100_raw": "汽车零部件",
+    "name": "杭州银行",
+    "f100": "银行",
+    "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -296,11 +280,11 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "601601",
+    "code": "600028",
     "market": "SH",
-    "name": "中国太保",
-    "f100": "保险",
-    "f100_raw": "保险Ⅱ",
+    "name": "中国石化",
+    "f100": "炼化及贸易",
+    "f100_raw": "炼化及贸易",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -312,11 +296,27 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600018",
+    "code": "002415",
+    "market": "SZ",
+    "name": "海康威视",
+    "f100": "计算机设备",
+    "f100_raw": "计算机设备",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
+    "code": "601601",
     "market": "SH",
-    "name": "上港集团",
-    "f100": "航运港口",
-    "f100_raw": "航运港口",
+    "name": "中国太保",
+    "f100": "保险",
+    "f100_raw": "保险Ⅱ",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
+    "code": "600660",
+    "market": "SH",
+    "name": "福耀玻璃",
+    "f100": "汽车零部件",
+    "f100_raw": "汽车零部件",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -328,25 +328,17 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "601288",
+    "code": "600018",
     "market": "SH",
-    "name": "农业银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
+    "name": "上港集团",
+    "f100": "航运港口",
+    "f100_raw": "航运港口",
     "source": "eastmoney-ulist-f100"
   },
   {
     "code": "601988",
     "market": "SH",
     "name": "中国银行",
-    "f100": "银行",
-    "f100_raw": "银行Ⅱ",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
-    "code": "601939",
-    "market": "SH",
-    "name": "建设银行",
     "f100": "银行",
     "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
@@ -360,27 +352,19 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600886",
+    "code": "601288",
     "market": "SH",
-    "name": "国投电力",
-    "f100": "电力",
-    "f100_raw": "电力",
-    "source": "eastmoney-ulist-f100"
-  },
-  {
-    "code": "002142",
-    "market": "SZ",
-    "name": "宁波银行",
+    "name": "农业银行",
     "f100": "银行",
     "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "002415",
-    "market": "SZ",
-    "name": "海康威视",
-    "f100": "计算机设备",
-    "f100_raw": "计算机设备",
+    "code": "601939",
+    "market": "SH",
+    "name": "建设银行",
+    "f100": "银行",
+    "f100_raw": "银行Ⅱ",
     "source": "eastmoney-ulist-f100"
   },
   {
@@ -392,9 +376,9 @@
     "source": "eastmoney-ulist-f100"
   },
   {
-    "code": "600900",
+    "code": "600886",
     "market": "SH",
-    "name": "长江电力",
+    "name": "国投电力",
     "f100": "电力",
     "f100_raw": "电力",
     "source": "eastmoney-ulist-f100"
@@ -405,6 +389,14 @@
     "name": "宝丰能源",
     "f100": "化学原料",
     "f100_raw": "化学原料",
+    "source": "eastmoney-ulist-f100"
+  },
+  {
+    "code": "600900",
+    "market": "SH",
+    "name": "长江电力",
+    "f100": "电力",
+    "f100_raw": "电力",
     "source": "eastmoney-ulist-f100"
   },
   {

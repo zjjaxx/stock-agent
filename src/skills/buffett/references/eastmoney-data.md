@@ -13,7 +13,7 @@
 | `step1_hard_filter.js` | 连续分红 / 股息缺失初筛（市值只在 Step0）；`--pass-json` 写出通过池 |
 | `fetch_f10_bundle.js` | Step2：ORG/DUPONT/GCASHFLOW/COMPRE/PROFILE/MAINFINADATA + quote；含 DPS/派息历史与 5 年持久性数据 |
 | `pack_step2_facts.js` | 合并 Step1+F10 为事实卡，并写入全量数字评分与总分 |
-| `score_numeric.js` | 同类分位 + 已批准长期锚 + 自身历史 + 持久性，全量数字评分（`--self-test`） |
+| `score_numeric.js` | 同一 f100 同类分位全量数字评分；hard 红线另算（`--self-test`） |
 | `build_anchor_pool.js` | 低频校准：按 f100 取总市值靠前样本；默认排除未明确映射的 G 类 |
 | `calibrate_anchors.js` | 低频校准：近 10 年公司中位 → 行业横截面锚，支持 `--resume`；产出 candidate 与复核报告 |
 | `approve_anchors.js` | 人工复核后将 candidate 写入 `anchors.approved.json`；无 `--yes` 仅预览 |
@@ -22,7 +22,7 @@
 | `fetch_kline_pool.js` | Step3：硬筛通过池全量日/周/月 K 线 + 布林（不论评级） |
 | `calc_bollinger.js` | Step3：后复权收盘算布林（唯一买卖路径） |
 | `fetch_valuation_history.js` | **已退出买卖流程**；可选研究用，禁止据此给仓位 |
-| `opencli_json.js` | 公共库，勿当入口 |
+| `gen_buffett_report.js` | 桌面终报骨架：每行业分位总分最高 + 布林到位 + 无 hard 红线 |
 
 ```bash
 S=scripts
@@ -37,8 +37,9 @@ node $S/fetch_f10_bundle.js --pool ~/Desktop/temp/buffett_pass_pool.json -o ~/De
 node $S/pack_step2_facts.js \
   --step1 ~/Desktop/temp/buffett_step1.json --f10 ~/Desktop/temp/buffett_f10.json --bond ~/Desktop/temp/buffett_bond.json \
   -o ~/Desktop/temp/buffett_step2_facts.md --json ~/Desktop/temp/buffett_step2_facts.json
-# Agent 复核红线；总分直接取事实卡脚本结果；K 线对全部 M 只再抓（不论评级）；勿跑估值分位脚本做买卖
+# 复核 hard 红线；总分取事实卡；K 线对全部 M 只；今日名单=同业到位最高分+布林+无 hard
 node $S/fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json --resume
+node $S/gen_buffett_report.js
 ```
 
 ### 长期锚校准（建议年度更新，不进入日常链路）
@@ -57,7 +58,7 @@ node $S/approve_anchors.js --candidate ~/Desktop/temp/buffett_anchors_candidate_
 
 clist 默认走 `push2delay.eastmoney.com`（本机 `push2` 常 TLS 被掐，`SSL_ERROR_SYSCALL`）。请求顺序：Node `https`（IPv4）→ `curl -4 --http1.1`（不要 `--compressed`）→ 其它 push2 域名 → 最后才 browser。
 
-**PB 当前不校准历史**：抓取没有历史 PB 字段。有 f100 PB 锚则带宽+分位；否则用类别软锚做带宽；再否则仅同类分位。
+**PB 当前不校准历史**：抓取没有历史 PB 字段。得分只看同类分位；报告锚列可写 f100/类别软锚对照。
 
 ## Step 0
 
@@ -121,7 +122,8 @@ node ../scripts/calc_bollinger.js ~/Desktop/temp/600900_month.json --period M
 
 - 禁止用 `allow_batch` / 股息分位≥80 / PB≤20 给「分批」「建仓」「加仓」
 - 禁止把「估值分位」写成信号来源
-- Step3 只跑布林；可尝试批量建仓 = 月线中轨附近 + 日线中～下轨（周线下轨附近更优、非必须）；未到 → 观望/持有
+- Step3 只跑布林；可尝试批量建仓 = 月线中轨附近 + 日线中～下轨（周线下轨附近更优、非必须）。今日建议另须本行业评分居首且无 hard 红线 / ⚠️；未到 → 观望/持有。须标明信号来源是布林带
+- **月线中轨附近**：下半带（≤中轨）到位；略高中轨须同时 `(收盘−中轨)/(上轨−中轨) ≤ 0.25` **且** `(收盘−中轨)/中轨 ≤ 5%`。禁止只靠股价 5%（窄带会吞上半带），也禁止只靠 0.25（宽带偏离过大）
 
 ```bash
 # 仅当用户明确要求「看看历史分位」时才跑；默认跳过
@@ -157,7 +159,6 @@ Step 0 用 `最新股息率 ≥ 国债×2`；Step 1 只把 `bond_ratio` 写入�
 | 持久性（非金融） | 近 5 年 `MAINFINADATA.ROIC` / `XSMLL`，进入 ROIC/毛利率持久性维度 |
 | 分红纪律 | `DIVIDEND_MAIN` 已实施方案按报告年度汇总「10派 X 元」得 DPS；结合派息率历史波动 |
 | 持久性（银行/保险/证券） | 近 5 年 ROE 稳定性 + 分红纪律；证券另评负债率。`fin_kind` 只认 f100 |
-| 企业性质 | `REAL_CONTROLER`（主）+ `CONTROL_HOLDER` / `ORG_FORM` |
 | 连续分红 | `DIVIDEND_MAIN` 按年去重 |
 | 估值分位 | `fetch_valuation_history.js`（可选；**不驱动仓位**） |
 | 布林 | `kline --adjust backward` 或 `push2his fqt=2` + `calc_bollinger.js`（唯一买卖路径） |

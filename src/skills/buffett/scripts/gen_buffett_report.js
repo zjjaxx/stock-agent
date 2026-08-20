@@ -2,7 +2,7 @@
 /**
  * 桌面终报骨架：读 Step2 事实卡 JSON，写 ~/Desktop/buffett-报告-YYYYMMDDHHmm.md
  *
- * 脚本只输出：§1 一览（每行业评分最高且布林到位、无 hard 红线）、§2 数字/技术/操作骨架、§3 硬筛剔除。
+ * 脚本只输出：§1 一览（每行业评分最高且布林到位、无 hard 红线）、§2 按 f100 分类/组内分数降序的数字技术操作骨架、§3 硬筛剔除。
  * 「巴菲特交叉验证」「主要风险」留空位，由 Agent 按 Buffett 视角逐票现写。
  *
  * 用法:
@@ -266,7 +266,7 @@ function rankTodayWinners(a, b) {
   );
 }
 
-function actionBlock(card, sig, { inToday, isIndustryWinner } = {}) {
+function actionBlock(card, sig, { inToday } = {}) {
   if (inToday) {
     return sig.weekResonance
       ? "建仓建议（同业到位候选中评分最高 + 布林到位，周线共振）≤15%总资金"
@@ -277,9 +277,6 @@ function actionBlock(card, sig, { inToday, isIndustryWinner } = {}) {
   }
   if (sig.batchOk && card.score?.rating === "⚠️") {
     return "观望：布林到位，数据缺口不入今日建议。";
-  }
-  if (sig.batchOk && isIndustryWinner) {
-    return "观望：本行业到位候选中评分最高且布林到位，但今日名额已满（周线共振→股息/国债比排队）。";
   }
   if (sig.batchOk) {
     return "观望：布林到位，同业已有更高分票入选（或同业第一分未到技术位）。";
@@ -325,13 +322,6 @@ function main(argv = process.argv.slice(2)) {
   const step1 = readJsonFile(args.step1);
   const xuangu = fs.existsSync(args.xuangu) ? readJsonFile(args.xuangu) : { source: "—" };
   const cards = [...(data.cards || [])];
-  const rank = { "🟢": 0, "🟡": 1, "🟠": 2, "🔴": 3, "⚠️": 4 };
-  cards.sort((a, b) => {
-    const ra = rank[a.score?.rating] ?? 9;
-    const rb = rank[b.score?.rating] ?? 9;
-    if (ra !== rb) return ra - rb;
-    return (b.score?.total || 0) - (a.score?.total || 0) || (b.bond_ratio || 0) - (a.bond_ratio || 0);
-  });
 
   const bollCache = {};
   const sigCache = {};
@@ -345,18 +335,30 @@ function main(argv = process.argv.slice(2)) {
     .filter((c) => canSuggestToday(c, sigCache[c.code]))
     .map((c) => ({ c, sig: sigCache[c.code], boll: bollCache[c.code] }));
   const industryWinners = pickIndustryWinners(eligible);
-  const winnerCodes = new Set(industryWinners.map(({ c }) => c.code));
-  const todayBuys = [...industryWinners].sort(rankTodayWinners).slice(0, 10);
+  const todayBuys = [...industryWinners].sort(rankTodayWinners);
 
   const todayCodes = new Set(todayBuys.map(({ c }) => c.code));
-  const queue = cards
-    .filter((c) => !todayCodes.has(c.code))
-    .map((c) => ({ c, sig: sigCache[c.code] }))
-    .sort(
-      (a, b) =>
-        (b.c.score?.total || 0) - (a.c.score?.total || 0) ||
-        (b.c.bond_ratio || 0) - (a.c.bond_ratio || 0),
+
+  /** §2：按东财 f100 分组；组内按加权总分从高到低；行业按组内最高分降序。 */
+  function scoreDesc(a, b) {
+    return (
+      (b.score?.total ?? -1) - (a.score?.total ?? -1) ||
+      (b.bond_ratio || 0) - (a.bond_ratio || 0) ||
+      String(a.code).localeCompare(String(b.code))
     );
+  }
+  const byIndustry = new Map();
+  for (const c of cards) {
+    const key = f100Key(c);
+    if (!byIndustry.has(key)) byIndustry.set(key, []);
+    byIndustry.get(key).push(c);
+  }
+  for (const list of byIndustry.values()) list.sort(scoreDesc);
+  const industryGroups = [...byIndustry.entries()].sort((a, b) => {
+    const maxA = a[1][0]?.score?.total ?? -1;
+    const maxB = b[1][0]?.score?.total ?? -1;
+    return maxB - maxA || a[0].localeCompare(b[0], "zh");
+  });
 
   const now = new Date();
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}`;
@@ -374,9 +376,9 @@ function main(argv = process.argv.slice(2)) {
     `候选池：N=${step1.n_pool}（${xuangu.source || "xuangu-result-dom"}）→ 硬筛通过 M=${step1.n_pass} → 今日建仓建议 K=${K}`,
   );
   L.push("");
-  L.push(`## 1. 今日建仓建议一览（K=${K}｜排队 Q=${queue.length}）`);
+  L.push(`## 1. 今日建仓建议一览（K=${K}）`);
   L.push("");
-  L.push("本次操作为「每个 f100 里，布林到位且无 hard 红线/⚠️ 的票中取总分最高」。跨行业不比总分；行业数>10 时按周线共振→股息/国债比取前 10。");
+  L.push("本次操作为「每个 f100 里，布林到位且无 hard 红线/⚠️ 的票中取总分最高」——有技术建仓位的行业各取 1 只，不设跨行业只数上限。跨行业不比总分。");
   L.push("");
   if (K === 0) {
     L.push("**今日无建仓建议**：无票同时满足「该行业布林到位候选中评分最高 + 月线中轨附近 + 日线中～下轨 + 无 hard 红线」。");
@@ -388,55 +390,51 @@ function main(argv = process.argv.slice(2)) {
     L.push("| — | — | — | — | — | — | 今日无建仓建议 | — | — |");
   } else {
     for (const { c } of todayBuys) {
+      const total = c.score?.total ?? "—";
       L.push(
-        `| ${c.code} | ${c.name} | ${c.score.rating} | ${c.price} | ${c.div}% | 布林带 | 建仓建议（同业到位最高分+布林） | ≤15% | 见§2 |`,
+        `| ${c.code} | ${c.name} | ${c.score.rating} ${total}分 | ${c.price} | ${c.div}% | 布林带 | 建仓建议（同业到位最高分+布林） | ≤15% | 见§2 |`,
       );
     }
   }
   L.push("");
-  L.push("**排队：**");
-  L.push("");
-  if (queue.length) {
-    for (const { c, sig } of queue) {
-      const total = c.score?.total ?? "—";
-      L.push(`- ${c.code} ${c.name}（${c.score.rating} ${total}分）：${sig.signal}`);
-    }
-  } else {
-    L.push("- （无排队票）");
-  }
-  L.push("");
-  L.push(`## 2. 个股全评（全部 M=${cards.length} 只）`);
+  L.push(`## 2. 个股全评（全部 M=${cards.length} 只｜按 f100 分类，组内分数降序）`);
   L.push("");
 
-  for (const c of cards) {
-    const rating = c.score?.rating ?? "⚠️";
-    const total = c.score?.total ?? "—";
-    L.push(`#### ${c.code} ${c.name}（评级 ${rating}｜加权${total}分）`);
+  for (const [ind, list] of industryGroups) {
+    L.push(`### ${ind}（${list.length} 只）`);
     L.push("");
-    L.push(
-      `**基础信息**：市值 ${fmtYi(c.mkt_yi)} 亿；东财 f100=${c.f100}；现价 ${c.price}；${taxDiv(c.div)}；股息/国债比 ${fmt(c.bond_ratio, 2)}；连续现金分红 ${c.div_streak} 年。`,
-    );
-    L.push("");
-    L.push("**评分表**（全部采用脚本结果）：");
-    L.push("");
-    L.push(scoreTable(c));
-    L.push("");
-    L.push(`**红线**：${redReview(c)}`);
-    L.push(`**综合评级**：${rating}（脚本总分 ${total}）。`);
-    L.push("");
-    const boll = bollCache[c.code] || { D: null, W: null, M: null };
-    const { text: techText, sig } = techBlock(boll);
-    L.push("**技术位**：");
-    L.push(techText);
-    L.push("");
-    L.push(`**预期目标价**：${boll.D?.ok ? "见技术位（操作采用技术档）" : "—"}`);
-    L.push("");
-    L.push(`**操作**：${actionBlock(c, sig, { inToday: todayCodes.has(c.code), isIndustryWinner: winnerCodes.has(c.code) })}`);
-    L.push("");
-    L.push("**巴菲特交叉验证**：（Agent 按 Buffett 视角现写，2–4 句）");
-    L.push("");
-    L.push("**主要风险**：（Agent 现写 1–3 条，须对本票特异）");
-    L.push("");
+    for (const c of list) {
+      const rating = c.score?.rating ?? "⚠️";
+      const total = c.score?.total ?? "—";
+      L.push(`#### ${c.code} ${c.name}（评级 ${rating}｜加权${total}分）`);
+      L.push("");
+      L.push(
+        `**基础信息**：市值 ${fmtYi(c.mkt_yi)} 亿；东财 f100=${c.f100}；现价 ${c.price}；${taxDiv(c.div)}；股息/国债比 ${fmt(c.bond_ratio, 2)}；连续现金分红 ${c.div_streak} 年。`,
+      );
+      L.push("");
+      L.push("**评分表**（全部采用脚本结果）：");
+      L.push("");
+      L.push(scoreTable(c));
+      L.push("");
+      L.push(`**红线**：${redReview(c)}`);
+      L.push(`**综合评级**：${rating}（脚本总分 ${total}）。`);
+      L.push("");
+      const boll = bollCache[c.code] || { D: null, W: null, M: null };
+      const { text: techText, sig } = techBlock(boll);
+      L.push("**技术位**：");
+      L.push(techText);
+      L.push("");
+      L.push(`**预期目标价**：${boll.D?.ok ? "见技术位（操作采用技术档）" : "—"}`);
+      L.push("");
+      L.push(
+        `**操作**：${actionBlock(c, sig, { inToday: todayCodes.has(c.code) })}`,
+      );
+      L.push("");
+      L.push("**巴菲特交叉验证**：（Agent 按 Buffett 视角现写，2–4 句）");
+      L.push("");
+      L.push("**主要风险**：（Agent 现写 1–3 条，须对本票特异）");
+      L.push("");
+    }
   }
 
   L.push("## 3. 硬门槛剔除简表");
@@ -450,7 +448,7 @@ function main(argv = process.argv.slice(2)) {
 
   fs.writeFileSync(outPath, L.join("\n"), "utf8");
   console.log(`REPORT=${outPath}`);
-  console.log(`K=${K} queue=${queue.length}`);
+  console.log(`K=${K}`);
   return 0;
 }
 

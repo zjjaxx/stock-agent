@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Step 2 事实卡：合并 Step1 pass + F10/分红包，并完成全量数字评分。
- * 红线定评、今日推荐、桌面终报仍由 Agent 写。
+ * 红线机械提示写入 red_hints；今日名单由 gen_buffett_report.js 按同业到位最高分+布林筛选。
  *
  * 用法:
  *   node pack_step2_facts.js \
@@ -36,25 +36,6 @@ function yiFromCap(cap) {
   const n = fnum(cap);
   if (n == null) return null;
   return n >= 1e6 ? n / 1e8 : n;
-}
-
-function entHint(controller, holder, orgForm) {
-  const ctrl = `${controller || ""}${holder || ""}${orgForm || ""}`;
-  if (["国务院", "中央汇金", "财政部"].some((k) => ctrl.includes(k))) return "中央国企";
-  if (
-    controller &&
-    ["省", "市", "自治区"].some((k) => controller.includes(k)) &&
-    !controller.includes("国务院")
-  ) {
-    return "地方国企";
-  }
-  if (["国资委", "国有资产", "央企"].some((k) => ctrl.includes(k))) {
-    return !String(controller || "").includes("省") && !String(controller || "").includes("市")
-      ? "中央国企"
-      : "地方国企";
-  }
-  if (controller) return "其他";
-  return "未知";
 }
 
 function industryRef(f100) {
@@ -159,10 +140,8 @@ function buildCard(row, f10, bondY) {
     code: String(row.code),
     name: name || row.name,
     market: row.market || f10.market,
-    ent_hint: entHint(f10.controller, f10.holder, f10.org_form),
     controller: f10.controller || null,
     holder: f10.holder || null,
-    org_form: f10.org_form || null,
     f100,
     f100_raw: row.f100_raw || f100,
     industry_f10: f10.industry || null,
@@ -234,7 +213,7 @@ function renderScoreBlock(score) {
   if (!score) return ["- 数字维评分：无"];
   const L = [];
   L.push(
-    `- 数字维同类组：\`${score.peer.key}\` n=${score.peer.n}${score.peer.n < 4 ? "（f100 不足 4 只，不用分位）" : ""}`,
+    `- 数字维同类组：\`${score.peer.key}\` n=${score.peer.n}${score.peer.n < 2 ? "（n<2，分位无信息→50）" : ""}`,
   );
   if (score.anchors) {
     L.push(
@@ -242,20 +221,18 @@ function renderScoreBlock(score) {
     );
   }
   L.push("");
-  L.push("| 维度 | 数值 | f100锚/标准值 | 分位 | 分位档 | 带宽 | 过热帽 | 脚本档 | 权重 |");
-  L.push("|---|---|---|---|---|---|---|---|---|");
+  L.push("| 维度 | 数值 | f100锚/标准值（对照） | 分位 | 脚本档 | 权重 |");
+  L.push("|---|---|---|---|---|---|");
   for (const id of dimOrder(score.kind)) {
     const d = score.dims[id];
     if (!d) continue;
-    const band = d.band ? `[${d.band.min},${d.band.max}] ${d.band.zone}` : "—";
-    const cap = d.overheat?.cap != null ? String(d.overheat.cap) : "—";
     const val = dimValueText(d);
     const anchorText = formatDimAnchor(id, score.anchors?.f100);
     L.push(
-      `| ${d.label} | ${val} | ${anchorText} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.pct_bucket ?? "—"} | ${band} | ${cap} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
+      `| ${d.label} | ${val} | ${anchorText} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
     );
   }
-  L.push(`| **合计** | — | ${formatScoreAnchorFooter(score)} | — | — | — | — | **${score.total ?? "—"}${score.rating ?? ""}** | 100% |`);
+  L.push(`| **合计** | — | ${formatScoreAnchorFooter(score)} | — | **${score.total ?? "—"}${score.rating ?? ""}** | 100% |`);
   L.push(`- 脚本总分（红线未核）：${score.total == null ? "⚠️" : `${score.total}${score.rating}`}`);
   if (!score.numeric_ok) {
     L.push(`- 数字维缺口：${score.missing.join("、")} → ⚠️ 暂停终评`);
@@ -273,7 +250,7 @@ function renderMd(step1, bond, cards, paths) {
   L.push(`# Buffett Step2 事实卡（数字维已评分）`);
   L.push("");
   L.push(
-    "> 总分全部由脚本按「同类分位 + 宽带宽 + 自身历史 + 持久性」生成。经营壁垒仅作不计分备注；红线定评与今日推荐由 Agent 写。禁止重打维度或手算总分。",
+    "> 总分全部由脚本按「同类（同一 f100）分位」生成。knot/过热帽仅对照不进得分。经营壁垒仅作不计分备注；hard 红线排除今日建议。禁止重打维度或手算总分。",
   );
   L.push("");
   L.push("## 池摘要");
@@ -316,9 +293,7 @@ function renderMd(step1, bond, cards, paths) {
     L.push("");
     L.push(`- 行业：东财 f100 **${c.f100 || "—"}**${c.f100_raw && c.f100_raw !== c.f100 ? `（原始 ${c.f100_raw}）` : ""}`);
     L.push(`- 画像参考（非硬公式）：${c.industry_ref.text}`);
-    L.push(
-      `- 实控人：${c.controller || "—"}；控股：${c.holder || "—"}；脚本推断性质 **${c.ent_hint}**（以实控人为准，可推翻）`,
-    );
+    L.push(`- 实控人：${c.controller || "—"}；控股：${c.holder || "—"}`);
     L.push(
       `- 行情：现价 ${fmt(c.price)}｜市值 ${fmt(c.mkt_yi)} 亿｜PB ${fmt(c.pb, 3)}｜PE ${fmt(c.pe)}｜TTM股息 ${fmt(c.div)}%｜股息/国债 ${fmt(c.bond_ratio)}x`,
     );

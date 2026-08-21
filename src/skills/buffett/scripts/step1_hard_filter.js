@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Step 1 硬门槛初筛（连续分红 / 股息缺失）。
- * 市值只在 Step 0 召回（>1000亿），此处不再剔除。
- * 行业来自东财 f100（fetch_industry.js），供 Step2 同类分位与锚读取。
+ * 市值只在 Step 0 召回（>500亿），此处不再剔除。
+ * 行业来自东财 f100（fetch_industry.js），供 Step2 池内同类分位。
  *
  * 用法:
  *   node step1_hard_filter.js \
@@ -15,7 +15,7 @@
  */
 
 import fs from "node:fs";
-import { normalizeIndustry } from "./anchor_config.js";
+import { normalizeIndustry } from "./industry_map.js";
 import { parseArgs, readJsonFile } from "./opencli_json.js";
 import { fetchIndustryForPool } from "./fetch_industry.js";
 

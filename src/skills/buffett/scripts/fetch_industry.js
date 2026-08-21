@@ -8,7 +8,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
-import { normalizeIndustry } from "./anchor_config.js";
+import { normalizeIndustry } from "./industry_map.js";
 import {
   browserFetchJson,
   marketFromCode,

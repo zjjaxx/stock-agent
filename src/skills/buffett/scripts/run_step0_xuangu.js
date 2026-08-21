@@ -166,7 +166,7 @@ function setMarketCap(session) {
   clickRef(session, pickRef(entries, (e) => e.text === "总市值"));
   sleep(400);
   const opts = findRef(session, { css: ".pickerPopoverContainer .listItem" });
-  clickRef(session, pickRef(opts, (e) => e.text === ">1000亿"));
+  clickRef(session, pickRef(opts, (e) => e.text === ">500亿"));
   sleep(200);
   const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
   clickRef(session, Number(btns[0].ref));
@@ -579,7 +579,7 @@ function main() {
     setMarketCap(session);
     const c1 = chips(session);
     console.log(`chips_after_mkt=${JSON.stringify(c1)}`);
-    if (!c1.some((x) => x.includes("总市值>1000亿"))) {
+    if (!c1.some((x) => x.includes("总市值>500亿"))) {
       throw new Error(`市值 chip 不正确: ${JSON.stringify(c1)}`);
     }
 

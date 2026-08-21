@@ -57,7 +57,7 @@ function fetchOne(sc, session) {
     secucode: sc,
     div_streak: streak,
     div_years: years.slice(0, 15),
-    pass_div_years: streak >= 5,
+    pass_div_years: streak >= 3,
     fetch_ok: true,
     rows_n: rows.length,
   };

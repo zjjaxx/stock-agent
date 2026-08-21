@@ -2,7 +2,7 @@
 /**
  * Step 2 红线机械提示（一票否决由 Agent 复核）。
  *
- * hard：默认倾向强制 🔴（仍须 Agent 复核属实）。
+ * hard：默认倾向终评回避（仍须 Agent 复核属实）。
  * soft：提示/观察，不自动一票否决（如特别分红且 FCF 覆盖健康）。
  *
  * 用法: node red_lines.js --self-test
@@ -69,7 +69,7 @@ export function classifyPayoutOver100({ pay, fcfRows = [], profit0 = null, profi
 
 /**
  * @param {{
- *   finKind?: "bank"|"insurance"|"broker"|"corp",
+ *   finKind?: "bank"|"insurance"|"broker"|"corp"|string,
  *   pay?: number|null,
  *   div?: number|null,
  *   fcfRows?: Array<{ year?: string, ocf?: number|null, profit?: number|null, nco?: number|null, cover?: number|null }>,

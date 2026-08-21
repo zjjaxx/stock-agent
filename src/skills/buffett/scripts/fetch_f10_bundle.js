@@ -370,13 +370,74 @@ function quoteOne(code) {
   return null;
 }
 
-/** 从 MAINFINADATA 年报抽取银/保专项字段。kind 只认 f100，不用字段反推。 */
-function extractSpecial(finaAnnual, f100 = "") {
-  const years = [];
-  for (const row of finaAnnual.slice(0, 3)) {
+/** 从 MAINFINADATA 年报抽取银/保/证专项字段。kind 只认 f100，不用字段反推。 */
+function extractSpecial(finaAnnual, f100 = "", gincomeAnnual = [], finaAll = [], gbalanceAll = []) {
+  const nonintByYear = {};
+  const incomeByYear = {};
+  for (const row of gincomeAnnual || []) {
     const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    if (!m) continue;
+    const y = m[1];
+    const ratio = nonintRatioFromIncome(row);
+    if (ratio != null) nonintByYear[y] = ratio;
+    const mix = brokerIncomeMix(row);
+    if (mix) incomeByYear[y] = mix;
+  }
+  const contractByYear = {};
+  for (const row of gbalanceAll || []) {
+    const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    if (!m) continue;
+    const y = m[1];
+    const cl = fnum(row.CONTRACT_LIAB);
+    const cly = fnum(row.CONTRACT_LIAB_YOY);
+    const ca = fnum(row.CONTRACT_ASSET);
+    const cay = fnum(row.CONTRACT_ASSET_YOY);
+    const arY = fnum(row.NOTE_ACCOUNTS_RECE_YOY ?? row.ACCOUNTS_RECE_YOY);
+    const noteY = fnum(row.NOTE_RECE_YOY);
+    if (cl == null && cly == null && ca == null && cay == null && arY == null) continue;
+    const name = String(row.REPORT_DATE_NAME || row.REPORT_TYPE || "");
+    const isAnnual = name.includes("年报") || String(row.REPORT_DATE || "").includes("-12-31");
+    const prev = contractByYear[y];
+    const next = {
+      contract_liab: cl,
+      contract_liab_yoy: cly,
+      contract_asset: ca,
+      contract_asset_yoy: cay,
+      ar_yoy: arY,
+      note_rece_yoy: noteY,
+      src: isAnnual ? "annual" : "interim",
+    };
+    if (!prev || isAnnual) contractByYear[y] = next;
+    else if (prev.src !== "annual") contractByYear[y] = next;
+  }
+  /** 年报 TOTAL_ROI 常空：同报告年度中报/三季 TOTAL_ROI 作回退。 */
+  const totalRoiFallback = {};
+  for (const row of finaAll || []) {
+    const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    if (!m) continue;
+    const troi = fnum(row.TOTAL_ROI);
+    if (troi == null) continue;
+    const y = m[1];
+    const name = String(row.REPORT_DATE_NAME || row.REPORT_TYPE || "");
+    if (name.includes("年报")) totalRoiFallback[y] = { v: troi, src: "annual" };
+    else if (!totalRoiFallback[y] || totalRoiFallback[y].src !== "annual") {
+      if (name.includes("中报") || name.includes("三季")) {
+        totalRoiFallback[y] = { v: troi, src: "interim" };
+      } else if (!totalRoiFallback[y]) {
+        totalRoiFallback[y] = { v: troi, src: "other" };
+      }
+    }
+  }
+  const years = [];
+  for (const row of finaAnnual.slice(0, 5)) {
+    const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
+    const year = m ? m[1] : null;
+    const totalRoiDirect = fnum(row.TOTAL_ROI);
+    const fb = year ? totalRoiFallback[year] : null;
+    const mix = year ? incomeByYear[year] || {} : {};
+    const cl = year ? contractByYear[year] || {} : {};
     years.push({
-      year: m ? m[1] : null,
+      year,
       npl: fnum(row.NONPERLOAN),
       provision: fnum(row.BLDKBBL),
       cet1: fnum(row.HXYJBCZL),
@@ -385,10 +446,113 @@ function extractSpecial(finaAnnual, f100 = "") {
       nim: fnum(row.NET_INTEREST_MARGIN),
       solvency: fnum(row.SOLVENCY_AR),
       net_roi: fnum(row.NET_ROI),
+      total_roi: totalRoiDirect != null ? totalRoiDirect : fb?.v ?? null,
+      total_roi_source: totalRoiDirect != null ? "annual" : fb?.src || null,
+      nbv: fnum(row.NBV_LIFE),
+      nbv_rate: fnum(row.NBV_RATE),
+      surrender: fnum(row.SURRENDER_RATE_LIFE),
+      risk_coverage: fnum(row.RISK_COVERAGE),
+      capital_leverage: fnum(row.CAPITAL_LEVERAGE_RATIO),
+      pledge_cover: fnum(row.ZYGDSYLZQJZB),
+      pledge_risk: fnum(row.ZQZYYWFXZB),
+      proprietary_capital: fnum(row.PROPRIETARY_CAPITAL),
+      interest_cover: fnum(row.INTEREST_COVERAGE_RATIO),
+      interest_debt: fnum(row.INTEREST_DEBT_RATIO),
+      ar_days: fnum(row.YSZKZZTS),
+      inv_days: fnum(row.CHZZTS),
+      rev_yoy: fnum(row.TOTALOPERATEREVETZ),
+      profit_yoy: fnum(row.PARENTNETPROFITTZ),
+      contract_liab: cl.contract_liab ?? null,
+      contract_liab_yoy: cl.contract_liab_yoy ?? null,
+      contract_asset: cl.contract_asset ?? null,
+      contract_asset_yoy: cl.contract_asset_yoy ?? null,
+      ar_yoy: cl.ar_yoy ?? null,
+      note_rece_yoy: cl.note_rece_yoy ?? null,
+      operate_reve: fnum(row.TOTALOPERATEREVE ?? row.OPERATE_INCOME_PK),
+      fee_ratio: mix.fee_ratio ?? null,
+      interest_ratio: mix.interest_ratio ?? null,
+      invest_ratio: mix.invest_ratio ?? null,
+      fee_yoy: mix.fee_yoy ?? null,
+      interest_yoy: mix.interest_yoy ?? null,
+      invest_yoy: mix.invest_yoy ?? null,
+      npl_amt: fnum(row.NON_PERFORMING_LOAN),
+      gross_loans: fnum(row.GROSSLOANS),
+      overdue_loans: fnum(row.OVERDUE_LOANS),
+      nonint_ratio: year && nonintByYear[year] != null ? nonintByYear[year] : null,
     });
   }
   const kind = finKindFromF100(f100);
-  return { kind: kind === "corp" ? null : kind, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
+  if (
+    (kind === "brand_consumer" ||
+      kind === "appliance" ||
+      kind === "equip_mfg" ||
+      kind === "tech_hardware") &&
+    (gbalanceAll || []).length
+  ) {
+    const latest = [...gbalanceAll].sort((a, b) =>
+      String(b.REPORT_DATE || "").localeCompare(String(a.REPORT_DATE || "")),
+    )[0];
+    const m = String(latest?.REPORT_DATE || "").match(/(20\d{2})/);
+    const y = m ? m[1] : null;
+    const cly = fnum(latest?.CONTRACT_LIAB_YOY);
+    const cl = fnum(latest?.CONTRACT_LIAB);
+    if (y && cly != null && years.length) {
+      const hit = years.find((row) => row.year === y);
+      if (hit) {
+        hit.contract_liab = cl ?? hit.contract_liab;
+        hit.contract_liab_yoy = cly;
+      } else {
+        // 禁止 unshift 残缺中期行（会冲掉年报存货天/利息保障）；把最新合同负债戳到年报 tip
+        years[0] = {
+          ...years[0],
+          contract_liab: cl ?? years[0].contract_liab,
+          contract_liab_yoy: cly,
+          contract_liab_asof: y,
+        };
+      }
+    }
+  }
+  if (
+    kind === "bank" ||
+    kind === "insurance" ||
+    kind === "broker" ||
+    kind === "utility" ||
+    kind === "resource_cycle" ||
+    kind === "brand_consumer" ||
+    kind === "infra_construction" ||
+    kind === "appliance" ||
+    kind === "equip_mfg" ||
+    kind === "tech_hardware"
+  ) {
+    return { kind, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
+  }
+  return { kind: null, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
+}
+
+/** 券商收入结构：手续费/利息/投资占营收%，及各自同比。 */
+export function brokerIncomeMix(row) {
+  const toi = fnum(row?.TOTAL_OPERATE_INCOME ?? row?.OPERATE_INCOME);
+  if (!(toi > 0)) return null;
+  const fee = fnum(row?.FEE_COMMISSION_INCOME);
+  const ii = fnum(row?.INTEREST_INCOME);
+  const inv = fnum(row?.INVEST_INCOME);
+  return {
+    fee_ratio: fee != null ? (fee / toi) * 100 : null,
+    interest_ratio: ii != null ? (ii / toi) * 100 : null,
+    invest_ratio: inv != null ? (inv / toi) * 100 : null,
+    fee_yoy: fnum(row?.FEE_COMMISSION_INCOME_YOY),
+    interest_yoy: fnum(row?.INTEREST_INCOME_YOY),
+    invest_yoy: fnum(row?.INVEST_INCOME_YOY),
+  };
+}
+
+/** 非息占比% = 1 − (利息收入−利息支出)/营业总收入。 */
+export function nonintRatioFromIncome(row) {
+  const toi = fnum(row?.TOTAL_OPERATE_INCOME ?? row?.OPERATE_INCOME);
+  const ii = fnum(row?.INTEREST_INCOME);
+  const ie = fnum(row?.INTEREST_EXPENSE);
+  if (!(toi > 0) || ii == null || ie == null) return null;
+  return ((toi - (ii - ie)) / toi) * 100;
 }
 
 /**
@@ -431,6 +595,28 @@ function buildBundle(code, market, session, f100 = "") {
     pageSize: 48,
     sortColumns: "REPORT_DATE",
   });
+  const kindGuess = finKindFromF100(f100);
+  let gincomeAnnual = [];
+  if (kindGuess === "bank") {
+    const gin = fetchReport(session, "RPT_F10_FINANCE_GINCOME", sc, {
+      pageSize: 16,
+      sortColumns: "REPORT_DATE",
+    });
+    gincomeAnnual = byDateDesc(annualRows(gin));
+  }
+  let gbalanceAll = [];
+  if (
+    kindGuess === "brand_consumer" ||
+    kindGuess === "infra_construction" ||
+    kindGuess === "appliance" ||
+    kindGuess === "equip_mfg" ||
+    kindGuess === "tech_hardware"
+  ) {
+    gbalanceAll = fetchReport(session, "RPT_F10_FINANCE_GBALANCE", sc, {
+      pageSize: 24,
+      sortColumns: "REPORT_DATE",
+    });
+  }
 
   const org0 = org[0] || {};
   const dupAnnual = byDateDesc(annualRows(dup));
@@ -440,7 +626,7 @@ function buildBundle(code, market, session, f100 = "") {
   const dupA = dupAnnual;
   const cashA = cashAnnual;
   const finaA = finaAnnual;
-  const special = extractSpecial(finaA, f100);
+  const special = extractSpecial(finaA, f100, gincomeAnnual, fina, gbalanceAll);
 
   const roeHist = [];
   for (const row of dupA.slice(0, 10)) {
@@ -656,6 +842,23 @@ function selfTestResolveFcf() {
   if (extractDurabilityEvidence([], "bank") !== null) {
     fails.push("bank-should-not-use-corp-durability");
   }
+  const ni = nonintRatioFromIncome({
+    TOTAL_OPERATE_INCOME: 100,
+    INTEREST_INCOME: 80,
+    INTEREST_EXPENSE: 20,
+  });
+  if (ni == null || Math.abs(ni - 40) > 1e-6) fails.push(`nonint-ratio ${ni}`);
+  const mix = brokerIncomeMix({
+    TOTAL_OPERATE_INCOME: 200,
+    FEE_COMMISSION_INCOME: 80,
+    INTEREST_INCOME: 60,
+    INVEST_INCOME: 50,
+    FEE_COMMISSION_INCOME_YOY: 12,
+    INTEREST_INCOME_YOY: 8,
+    INVEST_INCOME_YOY: 20,
+  });
+  if (!mix || Math.abs(mix.fee_ratio - 40) > 1e-6) fails.push(`broker-fee-ratio ${mix?.fee_ratio}`);
+  if (!mix || mix.invest_yoy !== 20) fails.push(`broker-invest-yoy ${mix?.invest_yoy}`);
   return fails;
 }
 

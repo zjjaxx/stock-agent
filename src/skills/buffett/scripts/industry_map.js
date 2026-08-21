@@ -102,13 +102,57 @@ export function normalizeIndustry(raw) {
 
 /**
  * 权重表种类只认东财 f100，禁止用不良/偿付/NIM 字段反推。
- * 证券/多元金融走 broker，不套非金 FCF。
+ * 证券/多元金融走 broker；非金按生意形态拆模板，未命中回 corp。
  */
+export const FIN_KINDS = [
+  "bank",
+  "insurance",
+  "broker",
+  "utility",
+  "brand_consumer",
+  "resource_cycle",
+  "infra_construction",
+  "appliance",
+  "equip_mfg",
+  "tech_hardware",
+  "corp",
+];
+
+/** 走非金 FCF/ROIC/毛利率/负债维度的种类（银/保/证除外）。 */
+export function isCorpCashKind(kind) {
+  return (
+    kind === "corp" ||
+    kind === "utility" ||
+    kind === "brand_consumer" ||
+    kind === "resource_cycle" ||
+    kind === "infra_construction" ||
+    kind === "appliance" ||
+    kind === "equip_mfg" ||
+    kind === "tech_hardware"
+  );
+}
+
 export function finKindFromF100(f100) {
   const key = normalizeIndustry(f100);
   if (/银行/.test(key)) return "bank";
   if (/保险/.test(key)) return "insurance";
   if (/证券|多元金融/.test(key)) return "broker";
+  // 非金：utility / brand / resource / infra / appliance / equip / tech / corp
+  if (/通信服务|电信|电力|水电|火电|水力|火力|核力|水务|燃气|公路|铁路|机场/.test(key) || (/港口/.test(key) && !/航运/.test(key))) {
+    return "utility";
+  }
+  if (/白酒|饮料乳品|乳品|调味|啤酒|软饮料|食品加工|中药|家居|广告营销|一般零售/.test(key)) {
+    return "brand_consumer";
+  }
+  if (/房屋建设|基础建设|装修装饰|工程咨询|园林工程/.test(key)) return "infra_construction";
+  if (
+    /煤炭|炼化|石油|石化|油气|普钢|特钢|钢铁|航运|化学原料|化学制品|农化|有色|黄金|工业金属|水泥|养殖/.test(key)
+  ) {
+    return "resource_cycle";
+  }
+  if (/白色家电|黑电|厨电|小家电/.test(key)) return "appliance";
+  if (/轨交设备|工程机械|商用车|汽车零部件|专用设备|通用设备/.test(key)) return "equip_mfg";
+  if (/计算机设备|通信设备|消费电子|半导体|元件|光学光电子/.test(key)) return "tech_hardware";
   return "corp";
 }
 
@@ -210,7 +254,22 @@ export function selfTest() {
   if (finKindFromF100("保险") !== "insurance") fails.push("fin-kind-insurance");
   if (finKindFromF100("证券") !== "broker") fails.push("fin-kind-broker");
   if (finKindFromF100("多元金融") !== "broker") fails.push("fin-kind-multi-fin");
-  if (finKindFromF100("白酒Ⅱ") !== "corp") fails.push("fin-kind-corp");
+  if (finKindFromF100("白酒Ⅱ") !== "brand_consumer") fails.push("fin-kind-brand-liquor");
+  if (finKindFromF100("白色家电") !== "appliance") fails.push("fin-kind-appliance");
+  if (finKindFromF100("饮料乳品") !== "brand_consumer") fails.push("fin-kind-brand-dairy");
+  if (finKindFromF100("食品加工") !== "brand_consumer") fails.push("fin-kind-brand-food");
+  if (finKindFromF100("电力") !== "utility") fails.push("fin-kind-utility-power");
+  if (finKindFromF100("通信服务") !== "utility") fails.push("fin-kind-telecom-as-utility");
+  if (finKindFromF100("煤炭开采") !== "resource_cycle") fails.push("fin-kind-resource-coal");
+  if (finKindFromF100("航运港口") !== "resource_cycle") fails.push("fin-kind-resource-shipping");
+  if (finKindFromF100("水泥") !== "resource_cycle") fails.push("fin-kind-resource-cement");
+  if (finKindFromF100("养殖业") !== "resource_cycle") fails.push("fin-kind-resource-agri");
+  if (finKindFromF100("房屋建设") !== "infra_construction") fails.push("fin-kind-infra");
+  if (finKindFromF100("计算机设备") !== "tech_hardware") fails.push("fin-kind-tech");
+  if (finKindFromF100("轨交设备") !== "equip_mfg") fails.push("fin-kind-equip");
+  if (finKindFromF100("房地产开发") !== "corp") fails.push("fin-kind-corp-fallback");
+  if (!isCorpCashKind("utility") || isCorpCashKind("bank")) fails.push("corp-cash-kind");
+  if (!isCorpCashKind("appliance") || !isCorpCashKind("tech_hardware")) fails.push("new-cash-kind");
   return fails;
 }
 

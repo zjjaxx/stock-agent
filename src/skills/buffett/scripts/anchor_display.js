@@ -1,112 +1,102 @@
 /**
- * 各评分维「f100锚/标准值」列展示文案（SKILL.md §2 评分表）。
- * 日常评分脚本输出 + 桌面终报共用。均指 knot 线性插值（0–100 四舍五入）。
+ * 评分表「对照说明」列（不再读 f100 校准锚；得分只看池内同类分位 / n=1 自身历史）。
  */
 
-import { anchorProfile, normalizeIndustry } from "./anchor_config.js";
-import { classPbAnchor } from "./industry_map.js";
-
-function fmtCvCuts(cuts) {
-  if (!cuts?.length) return null;
-  const grades = [100, 80, 50, 20];
-  return cuts
-    .slice(0, grades.length)
-    .map((c, i) => `${c}→${grades[i]}`)
-    .join("；");
-}
-
-function fmtSigmaCuts(cuts) {
-  if (!cuts?.length) return null;
-  const grades = [100, 80, 50, 20];
-  return cuts
-    .slice(0, grades.length)
-    .map((c, i) => `${c}pct→${grades[i]}`)
-    .join("；");
-}
-
-function isFinancial(f100) {
-  return /银行|保险/.test(normalizeIndustry(f100));
-}
-
-const LIN = "（knot 线性插值）";
-
-/** @returns {string} SKILL 规定的 f100锚/标准值 列文案 */
-export function formatDimAnchor(dimId, f100 = "") {
-  const profile = anchorProfile(f100);
-  const m = profile.metrics;
-
+/** @returns {string} 评分表对照列文案 */
+export function formatDimAnchor(dimId, _f100 = "") {
   switch (dimId) {
     case "pay":
-      if (m.pay?.band) {
-        const [lo, hi] = m.pay.band;
-        return `健康带 ${lo}%–${hi}%（±10pct 放宽）${LIN}`;
-      }
-      return "—";
-
+      return "池内同类分位（越高越好）；>100% 该维 0";
+    case "div_yield":
+      return "池内同类分位（TTM股息率越高越好；已过国债×2门槛）";
     case "roe":
-      return m.roe?.anchor != null ? `约≥${m.roe.anchor}%${LIN}` : "—";
-
-    case "pb": {
-      if (m.pb?.anchor != null) return `约≤${m.pb.anchor}${LIN}`;
-      const soft = classPbAnchor(f100);
-      return soft != null ? `约≤${soft}（类别软锚，PB未校准）${LIN}` : "仅同类分位（PB未校准，连续分位）";
-    }
-
+      return "池内同类分位（越高越好）";
+    case "pb":
+      return "池内同类分位（越低越好）；n=1 无自身 PB 史→缺维";
     case "debt":
-      if (isFinancial(f100)) return "不适用";
-      return m.debt?.anchor != null ? `约≤${m.debt.anchor}%${LIN}` : "—";
-
+      return "池内同类分位（越低越好）；银行/保险不适用";
     case "fcf":
-      return `覆盖 0.5/0.8/1.0/1.5/3.0→0/20/50/80/100${LIN}`;
-
+      return "池内同类分位（覆盖越高越好）；任一年 cover<1 最多 50";
     case "dividend_discipline":
-      return `DPS下调 0/1/2/3 次→100/50/20/0；派息σ 10/20/30pct→80/50/20${LIN}`;
-
-    case "roe_stability": {
-      const cuts = fmtCvCuts(m.roe_cv?.cuts);
-      return cuts ? `roe_cv：${cuts}${LIN}` : "—";
-    }
-
-    case "roic_durability": {
-      if (m.roic?.anchor == null) return "—";
-      const cv = fmtCvCuts(m.roic.cv_cuts);
-      return cv
-        ? `中位/锚 0.4–2.0×→0–100；CV ${cv}${LIN}`
-        : `中位/锚 0.4–2.0×→0–100${LIN}`;
-    }
-
-    case "margin_durability": {
-      const cuts = fmtSigmaCuts(m.margin_sigma?.cuts);
-      return cuts ? `margin_σ：${cuts}${LIN}` : "—";
-    }
-
+      return "池内同类分位（下调次数越少越好）";
+    case "roe_stability":
+      return "池内同类分位（ROE 的 CV 越低越好）";
+    case "roic_durability":
+      return "池内同类分位（5 年 ROIC 中位越高越好）";
+    case "margin_durability":
+      return "池内同类分位（5 年毛利率 σ 越低越好）";
     case "asset":
-      return `不良 0–0.9–1.5–2–3–5→100–90–65–35–10–0；拨备 120–400→0–100${LIN}`;
-
+      return "不良越低、拨备越高越好（各半分位合成）";
+    case "npl_formation":
+      return "池内同类分位（不良净生成率越低越好；口径=Δ不良余额/期初贷款）";
+    case "npl_gap":
+      return "池内同类分位（逾期/不良越低越好；东财 OVERDUE_LOANS，非严格90天）";
+    case "nonint":
+      return "池内同类分位（非息收入/营业总收入越高越好）";
     case "cet1":
-      return `核充 8–9.5–11–13–16→10–20–50–80–100${LIN}`;
-
+      return "池内同类分位（核充越高越好）";
     case "nim_trend":
-      return `水平 0.7–1.0–1.3–1.6–2.1→0–20–50–80–100；两年变动弱于同业中位才封顶${LIN}`;
-
+      return "池内同类分位（两年 NIM 变动越高越好；水平仅备注）";
     case "solvency":
-      return `偿付 100–150–180–220–280→10–50–80–90–90（超额封顶90）${LIN}`;
-
+      return "池内同类分位（偿付充足率越高越好）";
     case "solvency_trend":
-      return `自身变动−同业中位（pct）；knot -25–-15–-8–0–10–20→0–20–50–70–90–100；同业<3 用自身变动线性${LIN}`;
-
+      return "池内同类分位（两年偿付变动越高越好；无 IRR 时作资本轨迹替代）";
+    case "nbv_growth":
+      return "池内同类分位（寿险 NBV 同比增速越高越好）";
+    case "nbv_margin":
+      return "池内同类分位（NBV 率越高越好；营运利润/EV 替代）";
+    case "net_roi":
+      return "池内同类分位（净投资收益率越高越好）";
+    case "total_roi":
+      return "池内同类分位（总投资收益率越高越好；年报空可中报回退）";
+    case "risk_coverage":
+      return "池内同类分位（风险覆盖率越高越好）";
+    case "capital_leverage":
+      return "池内同类分位（资本杠杆率越高越好）";
+    case "pledge_cover":
+      return "池内同类分位（质押履约保障比例越高越好）";
+    case "margin_growth":
+      return "池内同类分位（利息收入同比越高越好；两融代理）";
+    case "prop_growth":
+      return "池内同类分位（投资收益同比越高越好；自营代理）";
+    case "fee_share":
+      return "池内同类分位（手续费/营收越高越好）";
+    case "fee_growth":
+      return "池内同类分位（手续费同比越高越好；投行/资管代理）";
+    case "dps_growth":
+      return "池内同类分位（DPS 同比增速越高越好）";
+    case "interest_cover":
+      return "池内同类分位（利息保障倍数越高越好）";
+    case "receivables":
+      return "池内同类分位（应收周转天数越低越好）";
+    case "ocf_quality":
+      return "池内同类分位（经营现金流/净利润越高越好）";
+    case "earnings_growth":
+      return "池内同类分位（营收/净利同比均值越高越好）";
+    case "cycle_heat":
+      return "毛利率自身历史分位越高越警惕（商品价格分位代理）";
+    case "gm_level":
+      return "池内同类分位（5年毛利中位越高越好；成本位置代理）";
+    case "net_leverage":
+      return "池内同类分位（有息负债率越低越好）";
+    case "capex_discipline":
+      return "池内同类分位（资本开支/经营现金流越低越好）";
+    case "contract_liab_trend":
+      return "池内同类分位（合同负债同比越高越好；渠道打款）";
+    case "gm_trend":
+      return "池内同类分位（毛利率年变动越高越好；吨价代理）";
+    case "pe":
+      return "池内同类分位（PE越低越好；无个股历史分位）";
     case "roi_trend":
-      return `相对变动 -15%–-5%–0–5%–15%→0–20–50–80–100${LIN}`;
-
+      return "池内同类分位（投资收益趋势越高越好）";
     default:
-      return "—";
+      return "池内同类分位；n=1 时自身历史≥3 年，否则缺维 ⚠️";
   }
 }
 
-/** 评分表合计行锚摘要 */
+/** 评分表合计行摘要 */
 export function formatScoreAnchorFooter(score, f100 = "") {
-  const a = score?.anchors;
-  if (!a) return "锚版本 —";
-  const n = a.sources?.roe?.n ?? a.sources?.pay?.n ?? "—";
-  return `锚版本 \`${a.version}\`｜f100=${a.f100 || f100 || "—"}｜N=${n}`;
+  const n = score?.peer?.n ?? "—";
+  const key = score?.peer?.key || (f100 ? `f100:${f100}` : "—");
+  return `评分尺：池内同类分位｜${key}｜同行 n=${n}｜n=1 自身历史≥3 年否则 ⚠️`;
 }

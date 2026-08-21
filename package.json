@@ -18,12 +18,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json",
-    "buffett:anchors": "npm run buffett:anchor-pool && npm run buffett:anchor-calibrate",
-    "buffett:anchor-pool": "node src/skills/buffett/scripts/build_anchor_pool.js -o \"$HOME/Desktop/temp/buffett_anchor_pool.json\"",
-    "buffett:anchor-calibrate": "node src/skills/buffett/scripts/calibrate_anchors.js --pool \"$HOME/Desktop/temp/buffett_anchor_pool.json\" --resume",
-    "buffett:anchor-preview": "node src/skills/buffett/scripts/approve_anchors.js",
-    "buffett:anchor-approve": "node src/skills/buffett/scripts/approve_anchors.js --yes"
+    "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^3.0.7",

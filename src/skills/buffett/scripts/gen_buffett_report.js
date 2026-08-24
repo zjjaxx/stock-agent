@@ -103,6 +103,25 @@ function taxDiv(div) {
   return `TTM ${div}%｜持股>1年免税；≤1年税后约 ${(div * 0.9).toFixed(2)}% / ${(div * 0.8).toFixed(2)}%`;
 }
 
+function isForwardAdjustedKline(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  return payload.fqt === 1 || payload.adjust === "forward" || payload.adj === "forward";
+}
+
+function resolveTechKlinePath(tmpDir, code, period) {
+  const qfqPath = path.join(tmpDir, `${code}_${period}_qfq.json`);
+  if (fs.existsSync(qfqPath)) return qfqPath;
+
+  const legacyPath = path.join(tmpDir, `${code}_${period}.json`);
+  if (!fs.existsSync(legacyPath)) return null;
+  try {
+    const legacy = readJsonFile(legacyPath);
+    return isForwardAdjustedKline(legacy) ? legacyPath : null;
+  } catch {
+    return null;
+  }
+}
+
 function loadBoll(tmpDir, code) {
   const result = { D: null, W: null, M: null };
   for (const [p, key] of [
@@ -110,12 +129,8 @@ function loadBoll(tmpDir, code) {
     ["week", "W"],
     ["month", "M"],
   ]) {
-    // 今日技术位只用前复权：优先 *_qfq.json，兼容旧路径 *.json
-    const candidates = [
-      path.join(tmpDir, `${code}_${p}_qfq.json`),
-      path.join(tmpDir, `${code}_${p}.json`),
-    ];
-    const klinePath = candidates.find((p0) => fs.existsSync(p0));
+    // 今日技术位只用前复权：优先 *_qfq.json；旧路径 *.json 必须显式校验为前复权
+    const klinePath = resolveTechKlinePath(tmpDir, code, p);
     if (!klinePath) continue;
     try {
       const out = execFileSync("node", [path.join(HERE, "calc_bollinger.js"), klinePath], {

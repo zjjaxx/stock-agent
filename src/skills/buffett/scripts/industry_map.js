@@ -70,11 +70,20 @@ export const CLASS_META = {
   },
 };
 
-/** 无 f100 PB 锚时的类别软锚（不做十年校准，只给带宽）。 */
-export function classPbAnchor(f100) {
-  const { cls } = classifyIndustry({ f100 });
+/** 无 f100 PB 锚时的类别软锚（不做十年校准，只给带宽）。可带 l3，港口/航运等复合 f100 按三级行业分。 */
+export function classPbAnchor(f100, extra = {}) {
+  const { cls } = classifyIndustry({ f100, l3: extra.l3, l2: extra.l2 });
   const pb = CLASS_META[cls]?.pb;
   return Number.isFinite(Number(pb)) ? Number(pb) : null;
+}
+
+/** 同行比较键：优先东财 F10 三级行业 l3，无 l3 时回退 ulist f100。禁止用股票简称。 */
+export function peerMeta(card = {}) {
+  const l3 = normalizeIndustry(card.industry_f10?.l3 || card.industry?.l3 || "");
+  const f100 = normalizeIndustry(card.f100 || "");
+  if (l3) return { key: `l3:${l3}`, label: l3, source: "l3", f100 };
+  if (f100) return { key: `f100:${f100}`, label: f100, source: "f100", f100 };
+  return { key: "ind:", label: "", source: null, f100: "" };
 }
 
 /** 先匹配更具体的行业名；同一字符串只取第一条命中。 */
@@ -101,7 +110,7 @@ export function normalizeIndustry(raw) {
 }
 
 /**
- * 权重表种类只认东财 f100，禁止用不良/偿付/NIM 字段反推。
+ * 权重表种类只认东财行业字段（优先 l3，过细回退 f100），禁止用不良/偿付/NIM 字段反推。
  * 证券/多元金融走 broker；非金按生意形态拆模板，未命中回 corp。
  */
 export const FIN_KINDS = [
@@ -154,6 +163,19 @@ export function finKindFromF100(f100) {
   if (/轨交设备|工程机械|商用车|汽车零部件|专用设备|通用设备/.test(key)) return "equip_mfg";
   if (/计算机设备|通信设备|消费电子|半导体|元件|光学光电子/.test(key)) return "tech_hardware";
   return "corp";
+}
+
+/**
+ * 权重模板：l3 能独立映射则用 l3（港口≠航运）；l3 过细落到 corp 时回退 f100（冰洗仍走白电）。
+ */
+export function finKindFromCard(card = {}) {
+  const l3 = card.industry_f10?.l3 || card.industry?.l3 || "";
+  const f100 = card.f100 || "";
+  if (l3) {
+    const fromL3 = finKindFromF100(l3);
+    if (fromL3 !== "corp") return fromL3;
+  }
+  return finKindFromF100(f100);
 }
 
 function matchRules(text) {
@@ -270,6 +292,18 @@ export function selfTest() {
   if (finKindFromF100("房地产开发") !== "corp") fails.push("fin-kind-corp-fallback");
   if (!isCorpCashKind("utility") || isCorpCashKind("bank")) fails.push("corp-cash-kind");
   if (!isCorpCashKind("appliance") || !isCorpCashKind("tech_hardware")) fails.push("new-cash-kind");
+  const portCard = { f100: "航运港口", industry_f10: { l3: "港口" } };
+  const shipCard = { f100: "航运港口", industry_f10: { l3: "航运" } };
+  if (finKindFromCard(portCard) !== "utility") fails.push("port-l3-utility");
+  if (finKindFromCard(shipCard) !== "resource_cycle") fails.push("ship-l3-resource");
+  if (peerMeta(portCard).key === peerMeta(shipCard).key) fails.push("port-ship-must-split");
+  if (peerMeta(portCard).key !== "l3:港口") fails.push(`port-peer-key ${peerMeta(portCard).key}`);
+  if (finKindFromCard({ f100: "白色家电", industry_f10: { l3: "冰洗" } }) !== "appliance") {
+    fails.push("appliance-l3-fallback");
+  }
+  if (finKindFromCard({ f100: "饮料乳品", industry_f10: { l3: "乳品" } }) !== "brand_consumer") {
+    fails.push("dairy-l3-brand");
+  }
   return fails;
 }
 

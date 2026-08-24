@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 /**
- * 拉取 A 股后复权 K 线（buffett Step 3；必须 fqt=2）。
+ * 拉取 A 股复权 K 线（buffett Step 3 / 回测）。
+ *
+ * 分工（勿混用）：
+ *   - 前复权 forward / fqt=1 → 今日布林、对照盘面（默认）
+ *   - 后复权 backward / fqt=2 → 回测、近 N 年收益校准
  *
  * 优先级：
- *   1) opencli eastmoney kline --adjust backward
- *   2) browser 直开 push2his URL（显式 fqt=2）
+ *   1) opencli eastmoney kline --adjust …
+ *   2) browser 直开 push2his URL（显式 fqt）
  *
  * 用法:
- *   node fetch_kline_hfq.js 600900 --market SH --period day -o tmp/600900_day.json
- *   node fetch_kline_hfq.js 000651.SZ --period week --limit 80
+ *   node fetch_kline_hfq.js 600900 --period day -o tmp/600900_day_qfq.json
+ *   node fetch_kline_hfq.js 600900 --adjust backward --period month --limit 48 -o tmp/600900_month_hfq.json
  *   node fetch_kline_hfq.js 600900 --browser-only
  */
 
@@ -28,6 +32,13 @@ const PERIOD_MAP = {
   month: ["103", "month", 40],
 };
 
+/** @typedef {"forward"|"backward"} AdjustMode */
+
+const ADJUST = {
+  forward: { name: "forward", fqt: 1, label: "前复权" },
+  backward: { name: "backward", fqt: 2, label: "后复权" },
+};
+
 export function normalizeCodeMarket(raw, market) {
   const s = String(raw).trim().toUpperCase();
   if (s.includes(".")) {
@@ -36,6 +47,13 @@ export function normalizeCodeMarket(raw, market) {
   }
   if (market) return [s, String(market).trim().toUpperCase()];
   return [s, marketFromCode(s)];
+}
+
+function resolveAdjust(raw) {
+  const key = String(raw || "forward").toLowerCase();
+  if (key === "forward" || key === "qfq" || key === "1") return ADJUST.forward;
+  if (key === "backward" || key === "hfq" || key === "2") return ADJUST.backward;
+  throw new Error(`--adjust 须为 forward|backward（或 qfq|hfq），收到: ${raw}`);
 }
 
 function barsFromAdapter(payload) {
@@ -92,7 +110,7 @@ function barsFromPush2his(payload) {
   return out;
 }
 
-export function fetchAdapter(code, period, limit) {
+export function fetchAdapter(code, period, limit, adjustName) {
   const proc = runOpencli(
     [
       "eastmoney",
@@ -101,7 +119,7 @@ export function fetchAdapter(code, period, limit) {
       "--period",
       period,
       "--adjust",
-      "backward",
+      adjustName,
       "--limit",
       String(limit),
       "-f",
@@ -115,13 +133,13 @@ export function fetchAdapter(code, period, limit) {
   return barsFromAdapter(parseJsonText(proc.stdout || ""));
 }
 
-export function fetchBrowser(code, market, { klt, limit, session }) {
+export function fetchBrowser(code, market, { klt, limit, session, fqt }) {
   const sid = secid(code, market);
   const url =
     "https://push2his.eastmoney.com/api/qt/stock/kline/get" +
     `?secid=${sid}&fields1=f1,f2,f3,f4,f5,f6` +
     "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" +
-    `&klt=${klt}&fqt=2&end=20500101&lmt=${limit}`;
+    `&klt=${klt}&fqt=${fqt}&end=20500101&lmt=${limit}`;
   const payload = browserFetchJson(session, url, { sleepS: 0.8 });
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     throw new Error("push2his 返回非对象");
@@ -134,15 +152,25 @@ export function fetchBrowser(code, market, { klt, limit, session }) {
 function main() {
   const args = parseArgs(process.argv.slice(2), {
     positional: ["code"],
-    defaults: { period: "day", session: "buffett-kline" },
+    defaults: { period: "day", session: "buffett-kline", adjust: "forward" },
     booleans: ["browser-only", "browserOnly"],
   });
   if (!args.code) {
-    console.error("usage: node fetch_kline_hfq.js <code> [--period day|week|month] [-o PATH]");
+    console.error(
+      "usage: node fetch_kline_hfq.js <code> [--adjust forward|backward] [--period day|week|month] [-o PATH]",
+    );
     return 1;
   }
   if (!PERIOD_MAP[args.period]) {
     console.error("error: --period 须为 day|week|month");
+    return 1;
+  }
+
+  let adj;
+  try {
+    adj = resolveAdjust(args.adjust);
+  } catch (exc) {
+    console.error(String(exc.message || exc));
     return 1;
   }
 
@@ -157,8 +185,8 @@ function main() {
 
   if (!browserOnly) {
     try {
-      bars = fetchAdapter(code, periodName, limit);
-      source = "eastmoney kline --adjust backward";
+      bars = fetchAdapter(code, periodName, limit, adj.name);
+      source = `eastmoney kline --adjust ${adj.name}`;
     } catch (exc) {
       errAdapter = String(exc.message || exc);
     }
@@ -166,8 +194,13 @@ function main() {
 
   if (!bars.length) {
     try {
-      bars = fetchBrowser(code, market, { klt, limit, session: args.session });
-      source = "eastmoney push2his fqt=2 (browser)";
+      bars = fetchBrowser(code, market, {
+        klt,
+        limit,
+        session: args.session,
+        fqt: adj.fqt,
+      });
+      source = `eastmoney push2his fqt=${adj.fqt} (browser)`;
     } catch (exc) {
       console.error(
         JSON.stringify({ error: String(exc.message || exc), adapter_error: errAdapter }),
@@ -181,8 +214,9 @@ function main() {
     market,
     secid: secid(code, market),
     period: args.period,
-    adjust: "backward",
-    fqt: 2,
+    adjust: adj.name,
+    fqt: adj.fqt,
+    adjust_label: adj.label,
     source,
     count: bars.length,
     bars,

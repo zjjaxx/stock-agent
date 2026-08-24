@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Step 2 全量数字评分：硬筛通过池 M 内同一 f100 分位为主尺。
+ * Step 2 全量数字评分：硬筛通过池 M 内同一东财三级行业（无 l3 则 f100）分位为主尺。
  * n=1（或该维有效同行 <2）：改用自身历史分位；历史有效年数 <3 → 该维缺维 → 整票 ⚠️。
  * 绝对值 knot / 过热帽不进得分；红线仍走 red_hints。无外部校准锚。
  *
@@ -8,25 +8,30 @@
  */
 
 import { parseArgs } from "./opencli_json.js";
-import { classPbAnchor, finKindFromF100, isCorpCashKind } from "./industry_map.js";
+import { classPbAnchor, finKindFromCard, finKindFromF100, isCorpCashKind, peerMeta } from "./industry_map.js";
 
 export const GRADES = [0, 20, 50, 80, 100];
 export const MIN_PEER = 4;
 export const OVERHEAT_MIN_YEARS = 5;
 export const SELF_HIST_MIN_YEARS = 3;
+/** utility：同业股息率极差 < 该值（百分点）时，股息维压平为中性分，避免 0/50/100 悬崖。 */
+export const UTILITY_DIV_SPREAD_NEUTRAL_PP = 0.25;
+export const UTILITY_DIV_TIGHT_SCORE = 60;
+/** utility：任一年 FCF cover<1 时总分上限（与 hard 红线一致，也作用于同业排名）。 */
+export const UTILITY_FCF_TOTAL_CAP = 50;
 
 export const WEIGHTS = {
   /** 非金兜底（未命中专有模板）：去 FCF/派息霸权 */
   corp: {
-    ocf_quality: 0.15,
+    ocf_quality: 0.12,
     roic_durability: 0.12,
     margin_durability: 0.1,
     dividend_discipline: 0.12,
     div_yield: 0.12,
-    roe: 0.12,
+    roe: 0.1,
     earnings_growth: 0.05,
-    pe: 0.08,
-    pb: 0.07,
+    pe: 0.11,
+    pb: 0.09,
     debt: 0.07,
   },
   /** 白电：品牌护城河 + 渠道/库存排雷 + 现金回报 */
@@ -34,67 +39,67 @@ export const WEIGHTS = {
     margin_durability: 0.12,
     roic_durability: 0.12,
     roe: 0.1,
-    contract_liab_trend: 0.1,
+    contract_liab_trend: 0.08,
     inventory_days: 0.06,
     receivables: 0.05,
-    ocf_quality: 0.1,
+    ocf_quality: 0.08,
     div_yield: 0.1,
     dividend_discipline: 0.08,
     dps_growth: 0.05,
-    gm_trend: 0.04,
-    pe: 0.05,
+    gm_trend: 0.03,
+    pe: 0.1,
     debt: 0.03,
   },
   /** 轨交/工程机械/商用车/汽零：订单蓄水 + 回款 + 杠杆 */
   equip_mfg: {
-    ocf_quality: 0.12,
+    ocf_quality: 0.1,
     interest_cover: 0.08,
     net_leverage: 0.06,
     receivables: 0.08,
-    contract_liab_trend: 0.1,
+    contract_liab_trend: 0.08,
     roic_durability: 0.12,
     margin_durability: 0.08,
-    earnings_growth: 0.08,
+    earnings_growth: 0.07,
     div_yield: 0.08,
     dividend_discipline: 0.1,
-    pe: 0.05,
-    pb: 0.05,
+    pe: 0.08,
+    pb: 0.07,
   },
   /** 安防/通信设备等科技硬件：ROIC/毛利 + 增长 + PE */
   tech_hardware: {
-    roic_durability: 0.14,
+    roic_durability: 0.12,
     margin_durability: 0.12,
     roe: 0.1,
-    ocf_quality: 0.1,
+    ocf_quality: 0.08,
     receivables: 0.08,
     inventory_days: 0.06,
     earnings_growth: 0.1,
-    contract_liab_trend: 0.06,
+    contract_liab_trend: 0.05,
     div_yield: 0.06,
     dividend_discipline: 0.08,
-    pe: 0.1,
+    pe: 0.15,
   },
-  /** 电力/公路/运营商等类债高股息：优化表≈90%放大至100%；去派息/工业负债/FCF霸权 */
+  /** 电力/公路/运营商等类债高股息：FCF+OCF 并用；窄 spread 股息不悬崖。其余 utility 回退本表。 */
   utility: {
-    div_yield: 0.17,
+    div_yield: 0.09,
     dividend_discipline: 0.12,
     dps_growth: 0.06,
     roic_durability: 0.14,
     margin_durability: 0.09,
-    interest_cover: 0.11,
-    receivables: 0.06,
-    ocf_quality: 0.12,
+    interest_cover: 0.09,
+    receivables: 0.05,
+    ocf_quality: 0.1,
+    fcf: 0.08,
     earnings_growth: 0.06,
     /** 无 EV/EBITDA 字段，暂用 PB 池内分位 */
-    pb: 0.07,
+    pb: 0.12,
   },
-  /** 白酒/乳品/调味：护城河 + 渠道排雷；去派息/FCF 霸权 */
   brand_consumer: {
-    margin_durability: 0.15,
+    margin_durability: 0.17,
     roic_durability: 0.12,
     roe: 0.1,
-    /** 合同负债同比（含原渠道库存位并入） */
-    contract_liab_trend: 0.1,
+    /** 合同负债同比：品牌消费改为越低越好（防压货）；白电/装备仍是越高越好 */
+    contract_liab_trend: 0.08,
     receivables: 0.05,
     ocf_quality: 0.08,
     div_yield: 0.08,
@@ -104,16 +109,16 @@ export const WEIGHTS = {
     earnings_growth: 0.05,
     /** 毛利变动 pp≈吨价/结构代理 */
     gm_trend: 0.05,
-    /** 无 PE 年史：池内 PE 分位（越低越好） */
+    /** 白酒便宜 PE 常是护城河破裂，不与工业票同权 */
     pe: 0.05,
     debt: 0.04,
   },
   /** 煤炭/炼化/航运等：防顶部幻觉；无商品价/AISC 时用毛利分位与成本代理 */
   resource_cycle: {
     /** 毛利率自身历史分位（越高越热→越警惕）；含原供需位 */
-    cycle_heat: 0.17,
+    cycle_heat: 0.14,
     /** 5年毛利中位≈成本曲线位置（含储量权并入） */
-    gm_level: 0.15,
+    gm_level: 0.13,
     interest_cover: 0.05,
     /** 有息负债率代理净负债/EBITDA */
     net_leverage: 0.08,
@@ -122,28 +127,28 @@ export const WEIGHTS = {
     roic_durability: 0.15,
     margin_durability: 0.05,
     /** 无个股 PB 年史：池内分位越低越好（防顶部） */
-    pb: 0.1,
+    pb: 0.15,
     /** 无利息绝对额：经营现金流/净利作付息能力代理 */
     ocf_quality: 0.08,
   },
   /** 建筑基建：重回款与杠杆；无新签/地产敞口时用合同资产与应收同比代理 */
   infra_construction: {
-    ocf_quality: 0.15,
+    ocf_quality: 0.12,
     receivables: 0.1,
     interest_cover: 0.08,
     net_leverage: 0.05,
     /** 应收/票据同比增速，越高越警惕（地产敞口/坏账压力代理） */
     ar_pressure: 0.05,
     /** 合同资产同比（无新签订单字段） */
-    order_proxy: 0.12,
+    order_proxy: 0.1,
     /** 合同资产/营收≈在手工作量覆盖 */
     backlog_cover: 0.05,
     div_yield: 0.08,
     dividend_discipline: 0.1,
     roic_durability: 0.08,
     gm_trend: 0.05,
-    pe: 0.04,
-    pb: 0.05,
+    pe: 0.07,
+    pb: 0.07,
   },
   bank: {
     asset: 0.1,
@@ -194,6 +199,337 @@ export const WEIGHTS = {
     pb: 0.08,
   },
 };
+
+/** 类债公用事业子行业权重（仅 l3 命中时用；同业仍只在本 l3 内比）。 */
+export const UTILITY_L3_WEIGHTS = {
+  /** 高速：1y/3y 同序；重 OCF、轻 PB/FCF/ROIC */
+  高速公路: {
+    div_yield: 0.06,
+    dividend_discipline: 0.11,
+    dps_growth: 0.1,
+    roic_durability: 0.06,
+    margin_durability: 0.06,
+    interest_cover: 0.06,
+    receivables: 0.03,
+    ocf_quality: 0.36,
+    fcf: 0.03,
+    earnings_growth: 0.1,
+    pb: 0.03,
+  },
+  /** 水电：1y/3y 同序；重盈利增速+OCF，轻 FCF */
+  水力发电: {
+    div_yield: 0.09,
+    dividend_discipline: 0.12,
+    dps_growth: 0.06,
+    roic_durability: 0.12,
+    margin_durability: 0.09,
+    interest_cover: 0.09,
+    receivables: 0.05,
+    ocf_quality: 0.16,
+    fcf: 0.02,
+    earnings_growth: 0.1,
+    pb: 0.1,
+  },
+  /** 港口：按近3年收益校准（招商>宁波>青岛>上港）；重 margin/FCF/应收/DPS */
+  港口: {
+    div_yield: 0.05,
+    dividend_discipline: 0.1,
+    dps_growth: 0.12,
+    roic_durability: 0.09,
+    margin_durability: 0.14,
+    interest_cover: 0,
+    receivables: 0.14,
+    ocf_quality: 0.03,
+    fcf: 0.15,
+    earnings_growth: 0.08,
+    pb: 0.1,
+  },
+  /** 火电：按近3年收益校准（华能>华电>浙能）；重 DPS/OCF/margin，轻股息/PB */
+  火力发电: {
+    div_yield: 0.04,
+    dividend_discipline: 0.12,
+    dps_growth: 0.18,
+    roic_durability: 0.03,
+    margin_durability: 0.12,
+    interest_cover: 0.01,
+    receivables: 0.09,
+    ocf_quality: 0.18,
+    fcf: 0.11,
+    earnings_growth: 0.08,
+    pb: 0.04,
+  },
+};
+
+/** 银行三级子行业权重（默认仍用 WEIGHTS.bank）。 */
+export const BANK_L3_WEIGHTS = {
+  /**
+   * 城商行：按近3年收益校准靶标（宁波>上海>杭州>成都>北京）。
+   * 结构性限制：宁波无法靠线性权重登顶；取 ↔3y 最优（杭州>#1、宁波#2，约80%）。
+   */
+  城商行: {
+    asset: 0.28,
+    npl_formation: 0.13,
+    cet1: 0,
+    npl_gap: 0.28,
+    div_yield: 0.02,
+    dividend_discipline: 0.05,
+    roe: 0.04,
+    roe_stability: 0.01,
+    nim_trend: 0,
+    nonint: 0.14,
+    pb: 0.05,
+  },
+  /** 股份制：按近3年收益校准；重资产质量+偏离度+ROE（中信/招行顶部分歧为结构性） */
+  股份制银行: {
+    asset: 0.2,
+    npl_formation: 0.04,
+    cet1: 0.12,
+    npl_gap: 0.18,
+    div_yield: 0.01,
+    dividend_discipline: 0.02,
+    roe: 0.26,
+    roe_stability: 0.09,
+    nim_trend: 0.02,
+    nonint: 0.03,
+    pb: 0.03,
+  },
+  /** 国有大行：按近3年收益校准（农行>建行>工行>中行>邮储>交行）；重资产质量+派息纪律+ROE */
+  国有大型银行: {
+    asset: 0.33,
+    npl_formation: 0.03,
+    cet1: 0.06,
+    npl_gap: 0.1,
+    div_yield: 0.04,
+    dividend_discipline: 0.16,
+    roe: 0.12,
+    roe_stability: 0.09,
+    nim_trend: 0.05,
+    nonint: 0.01,
+    pb: 0.01,
+  },
+  /** 农商行：1y/3y 同序；重派息纪律+息差趋势+ROE稳定（渝农>沪农） */
+  农商行: {
+    asset: 0.1,
+    npl_formation: 0.05,
+    cet1: 0.05,
+    npl_gap: 0.1,
+    div_yield: 0.05,
+    dividend_discipline: 0.2,
+    roe: 0.05,
+    roe_stability: 0.15,
+    nim_trend: 0.15,
+    nonint: 0.02,
+    pb: 0.08,
+  },
+};
+
+/** 周期资源三级子行业权重（默认仍用 WEIGHTS.resource_cycle）。 */
+export const RESOURCE_L3_WEIGHTS = {
+  /** 铝：1y/3y 同序天山>南山；重 ROIC+OCF+capex，轻 PB/景气/毛利分位（南山估值/景气虚高） */
+  铝: {
+    cycle_heat: 0.06,
+    gm_level: 0.06,
+    interest_cover: 0.04,
+    net_leverage: 0.06,
+    dividend_discipline: 0.08,
+    capex_discipline: 0.12,
+    roic_durability: 0.3,
+    margin_durability: 0.04,
+    pb: 0.08,
+    ocf_quality: 0.16,
+  },
+  /** 动力煤：1y/3y 同序电投>神华>陕煤；重 PB/派息/毛利耐久/杠杆，轻景气与 ROIC（陕煤景气虚高） */
+  动力煤: {
+    cycle_heat: 0.04,
+    gm_level: 0.04,
+    interest_cover: 0.04,
+    net_leverage: 0.18,
+    dividend_discipline: 0.18,
+    capex_discipline: 0.04,
+    roic_durability: 0.06,
+    margin_durability: 0.14,
+    pb: 0.22,
+    ocf_quality: 0.06,
+  },
+};
+
+/** utility 模板：优先三级行业子表，否则 WEIGHTS.utility。 */
+export function utilityWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return UTILITY_L3_WEIGHTS[l3] || WEIGHTS.utility;
+}
+
+/** bank 模板：优先三级行业子表，否则 WEIGHTS.bank。 */
+export function bankWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return BANK_L3_WEIGHTS[l3] || WEIGHTS.bank;
+}
+
+/** resource_cycle 模板：优先三级行业子表，否则 WEIGHTS.resource_cycle。 */
+export function resourceWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return RESOURCE_L3_WEIGHTS[l3] || WEIGHTS.resource_cycle;
+}
+
+/** 白电三级子行业权重（默认仍用 WEIGHTS.appliance）。 */
+export const APPLIANCE_L3_WEIGHTS = {
+  /** 空调：1y/3y 同序美的>格力；重毛利/渠道/库存/派息纪律，轻 PE/股息/ROE（格力估值与股息虚高） */
+  空调: {
+    margin_durability: 0.16,
+    roic_durability: 0.08,
+    roe: 0.06,
+    contract_liab_trend: 0.12,
+    inventory_days: 0.1,
+    receivables: 0.08,
+    ocf_quality: 0.04,
+    div_yield: 0.05,
+    dividend_discipline: 0.12,
+    dps_growth: 0.08,
+    gm_trend: 0.02,
+    pe: 0.05,
+    debt: 0.04,
+  },
+};
+
+/** appliance 模板：优先三级行业子表，否则 WEIGHTS.appliance。 */
+export function applianceWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return APPLIANCE_L3_WEIGHTS[l3] || WEIGHTS.appliance;
+}
+
+/** 装备制造三级子行业权重（默认仍用 WEIGHTS.equip_mfg）。 */
+export const EQUIP_L3_WEIGHTS = {
+  /** 轨交：1y/3y 同序通号>中车；重 ROIC+合同负债，轻估值/杠杆/OCF（中车便宜与报表质量虚高） */
+  轨交设备: {
+    ocf_quality: 0.05,
+    interest_cover: 0.04,
+    net_leverage: 0.04,
+    receivables: 0.05,
+    contract_liab_trend: 0.2,
+    roic_durability: 0.35,
+    margin_durability: 0.05,
+    earnings_growth: 0.05,
+    div_yield: 0.04,
+    dividend_discipline: 0.05,
+    pe: 0.04,
+    pb: 0.04,
+  },
+};
+
+/** equip_mfg 模板：优先三级行业子表，否则 WEIGHTS.equip_mfg。 */
+export function equipWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return EQUIP_L3_WEIGHTS[l3] || WEIGHTS.equip_mfg;
+}
+
+/**
+ * 保险三级子行业权重（默认仍用 WEIGHTS.insurance）。
+ * 近3年为主：新华>平安>太保；注意近1年是平安>新华，顶部分歧。
+ */
+export const INSURANCE_L3_WEIGHTS = {
+  保险: {
+    solvency: 0.04,
+    solvency_trend: 0.02,
+    nbv_growth: 0.2,
+    nbv_margin: 0.05,
+    div_yield: 0.08,
+    dividend_discipline: 0.05,
+    roe: 0.2,
+    net_roi: 0.05,
+    total_roi: 0.15,
+    roe_stability: 0.05,
+    pb: 0.11,
+  },
+};
+
+/** insurance 模板：优先三级行业子表，否则 WEIGHTS.insurance。 */
+export function insuranceWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return INSURANCE_L3_WEIGHTS[l3] || WEIGHTS.insurance;
+}
+
+/** 基建建筑三级子行业权重（默认仍用 WEIGHTS.infra_construction）。 */
+export const INFRA_L3_WEIGHTS = {
+  /**
+   * 基建市政：近3年 路桥>铁建>中铁（1y 中铁/铁建中段对调）。
+   * 重 OCF/利息覆盖/ROIC/在手覆盖，轻 PE/PB/应收/订单代理（铁建估值与订单虚高）。
+   */
+  基建市政工程: {
+    ocf_quality: 0.18,
+    receivables: 0.05,
+    interest_cover: 0.12,
+    net_leverage: 0.06,
+    ar_pressure: 0.04,
+    order_proxy: 0.05,
+    backlog_cover: 0.1,
+    div_yield: 0.1,
+    dividend_discipline: 0.08,
+    roic_durability: 0.12,
+    gm_trend: 0.03,
+    pe: 0.03,
+    pb: 0.04,
+  },
+};
+
+/** infra_construction 模板：优先三级行业子表，否则 WEIGHTS.infra_construction。 */
+export function infraWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return INFRA_L3_WEIGHTS[l3] || WEIGHTS.infra_construction;
+}
+
+/** 证券三级子行业权重（默认仍用 WEIGHTS.broker）。 */
+export const BROKER_L3_WEIGHTS = {
+  /** 证券：1y/3y 同序国泰>东方>国信；重风险覆盖/质押/两融自营增速，轻 ROE/资本杠杆/手续费占比（国信账面虚高） */
+  证券: {
+    risk_coverage: 0.18,
+    capital_leverage: 0.05,
+    pledge_cover: 0.12,
+    div_yield: 0.03,
+    roe: 0.06,
+    roe_stability: 0.08,
+    margin_growth: 0.12,
+    prop_growth: 0.12,
+    fee_share: 0.05,
+    fee_growth: 0.1,
+    pb: 0.09,
+  },
+};
+
+/** broker 模板：优先三级行业子表，否则 WEIGHTS.broker。 */
+export function brokerWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return BROKER_L3_WEIGHTS[l3] || WEIGHTS.broker;
+}
+
+/** 品牌消费三级子行业权重（默认仍用 WEIGHTS.brand_consumer）。 */
+export const BRAND_L3_WEIGHTS = {
+  /**
+   * 白酒：近3年 茅台>老窖>五粮液>洋河>汾酒（1y 五粮液/洋河中段对调）。
+   * 重毛利/合同负债/股息/OCF/毛利趋势/负债，轻 ROIC/ROE/应收/盈利增速（汾酒成长虚高）。
+   * 结构性限制：洋河无法靠线性权重大过汾酒（多数维度垫底）。
+   */
+  白酒: {
+    margin_durability: 0.1,
+    roic_durability: 0.02,
+    roe: 0.02,
+    contract_liab_trend: 0.12,
+    receivables: 0.02,
+    ocf_quality: 0.12,
+    div_yield: 0.16,
+    dividend_discipline: 0.1,
+    dps_growth: 0.01,
+    earnings_growth: 0.01,
+    gm_trend: 0.16,
+    pe: 0.02,
+    debt: 0.14,
+  },
+};
+
+/** brand_consumer 模板：优先三级行业子表，否则 WEIGHTS.brand_consumer。 */
+export function brandWeightsForCard(card = {}) {
+  const l3 = String(card.industry_f10?.l3 || card.industry?.l3 || "").replace(/[ⅠⅡⅢIVX\s]/g, "").trim();
+  return BRAND_L3_WEIGHTS[l3] || WEIGHTS.brand_consumer;
+}
 
 export const DIM_LABEL = {
   fcf: "FCF覆盖",
@@ -363,12 +699,12 @@ export function ratingOf(total) {
   return "—";
 }
 
-/** 同类仅同一东财 f100（样本=硬筛通过池 M）。n≥2 用同行分位；否则自身历史。 */
+/** 同类优先同一东财 F10 l3，无 l3 时同一 f100（样本=硬筛通过池 M）。n≥2 用同行分位；否则自身历史。 */
 export function peerGroup(card, cards) {
-  const f100 = normF100(card.f100);
-  if (!f100) return { peers: [], key: "f100:", n: 0, escalated: false };
-  const peers = (cards || []).filter((c) => normF100(c.f100) === f100);
-  return { peers, key: `f100:${f100}`, n: peers.length, escalated: false };
+  const meta = peerMeta(card);
+  if (!meta.label) return { peers: [], key: meta.key || "ind:", n: 0, escalated: false };
+  const peers = (cards || []).filter((c) => peerMeta(c).key === meta.key);
+  return { peers, key: meta.key, n: peers.length, escalated: false, label: meta.label, source: meta.source };
 }
 
 export function roeKnots(_f100) {
@@ -388,8 +724,8 @@ export function roeBand(f100, roe) {
   return { ...band, zone };
 }
 
-export function pbKnots(f100) {
-  const p = classPbAnchor(f100);
+export function pbKnots(f100, extra = {}) {
+  const p = classPbAnchor(f100, extra);
   if (p == null) return null;
   return [
     { x: 0, y: 100 },
@@ -401,10 +737,10 @@ export function pbKnots(f100) {
   ];
 }
 
-export function pbBand(f100, pb) {
+export function pbBand(f100, pb, extra = {}) {
   const v = fnum(pb);
   if (v == null || v <= 0) return null;
-  const knots = pbKnots(f100);
+  const knots = pbKnots(f100, extra);
   if (!knots) return { min: 0, max: 100, zone: "peer-only-no-pb-anchor" };
   const band = linearBandAt(v, knots);
   const score = linearScore(v, knots);
@@ -1011,7 +1347,24 @@ function applyNumeric({
   return d;
 }
 
+/** utility 专用：组内股息率极差过窄时，不用 0/50/100 悬崖。 */
+function tightenUtilityDivYield(dim, peerDivs) {
+  if (dim?.score == null) return;
+  const vals = (peerDivs || []).map(fnum).filter((x) => x != null);
+  if (vals.length < 2) return;
+  const spread = Math.max(...vals) - Math.min(...vals);
+  if (!(spread < UTILITY_DIV_SPREAD_NEUTRAL_PP)) return;
+  dim.score = UTILITY_DIV_TIGHT_SCORE;
+  dim.reasons.push(`同业股息spread=${spread.toFixed(2)}pp<${UTILITY_DIV_SPREAD_NEUTRAL_PP}，压平悬崖→${UTILITY_DIV_TIGHT_SCORE}`);
+}
+
+function l3Of(card) {
+  return card.industry_f10?.l3 || card.industry?.l3 || "";
+}
+
 function finKindOf(card) {
+  const kind = finKindFromCard(card);
+  if (kind) return kind;
   if (card.f100) return finKindFromF100(card.f100);
   if (card.fin_kind) return card.fin_kind;
   if (card.special?.kind === "bank" || card.special?.kind === "insurance" || card.special?.kind === "broker") {
@@ -1137,9 +1490,70 @@ function specialSeries(card, key) {
   return (card.special?.years || []).map((y) => fnum(y[key])).filter((x) => x != null);
 }
 
+function yearHist(card, key) {
+  return (card[key] || []).map((r) => fnum(r.value)).filter((x) => x != null);
+}
+
+function ocfNiHist(card) {
+  return (card.fcf_cov || [])
+    .map((row) => {
+      const ocf = fnum(row.ocf);
+      const profit = fnum(row.profit);
+      return ocf != null && profit > 0 ? ocf / profit : null;
+    })
+    .filter((x) => x != null);
+}
+
+function dpsYoyHist(card) {
+  const xs = dpsHist(card);
+  const out = [];
+  for (let i = 0; i < xs.length - 1; i++) {
+    if (xs[i + 1] > 0) out.push(((xs[i] - xs[i + 1]) / xs[i + 1]) * 100);
+  }
+  return out;
+}
+
+function gmDeltaHist(card) {
+  const hist = annualValues(card.durability_evidence?.gross_margin_5y);
+  const out = [];
+  for (let i = 0; i < hist.length - 1; i++) out.push(hist[i] - hist[i + 1]);
+  return out;
+}
+
+function rollingSigmaHist(card) {
+  const hist =
+    annualValues(card.durability_evidence?.gross_margin_5y) ||
+    annualValues(card.durability_evidence?.net_margin_5y);
+  const out = [];
+  for (let i = 0; i + 3 <= hist.length; i++) {
+    const s = stdev(hist.slice(i, i + 3));
+    if (s != null) out.push(s);
+  }
+  return out;
+}
+
 export function scoreCard(card, cards) {
   const kind = finKindOf(card);
-  const weights = WEIGHTS[kind] || WEIGHTS.corp;
+  const weights =
+    kind === "utility"
+      ? utilityWeightsForCard(card)
+      : kind === "bank"
+        ? bankWeightsForCard(card)
+        : kind === "resource_cycle"
+          ? resourceWeightsForCard(card)
+          : kind === "appliance"
+            ? applianceWeightsForCard(card)
+            : kind === "equip_mfg"
+              ? equipWeightsForCard(card)
+              : kind === "insurance"
+                ? insuranceWeightsForCard(card)
+                : kind === "infra_construction"
+                  ? infraWeightsForCard(card)
+                  : kind === "broker"
+                    ? brokerWeightsForCard(card)
+                    : kind === "brand_consumer"
+                      ? brandWeightsForCard(card)
+                      : WEIGHTS[kind] || WEIGHTS.corp;
   const pg = peerGroup(card, cards);
   const n = pg.n;
   const dims = {};
@@ -1173,9 +1587,10 @@ export function scoreCard(card, cards) {
       higherBetter: true,
       n,
       suspect: false,
-      selfHistValues: [], // 无逐年 TTM 股息序列；同业 n≥2 走分位
-      extraReasons: ["TTM股息率同业分位（门槛之上仍奖励更厚垫）"],
+      selfHistValues: yearHist(card, "yield_hist"),
+      extraReasons: ["TTM股息率同类分位；n=1 用年末股息/收盘自身分位"],
     });
+    if (kind === "utility") tightenUtilityDivYield(dims.div_yield, peerVals((c) => fnum(c.div)));
   }
 
   if (weights.roe != null) {
@@ -1195,15 +1610,18 @@ export function scoreCard(card, cards) {
   }
 
   if (weights.dividend_discipline != null) {
+    const dpsSeries = dpsHist(card);
+    const useDpsSelf = n < 2 && dpsSeries.length >= SELF_HIST_MIN_YEARS;
     dims.dividend_discipline = applyNumeric({
       id: "dividend_discipline",
       weight: weights.dividend_discipline,
-      value: dpsCutCount(card),
+      value: useDpsSelf ? dpsSeries[0] : dpsCutCount(card),
       peersValues: peerVals(dpsCutCount),
-      higherBetter: false,
+      higherBetter: useDpsSelf ? true : false,
       n,
       displayValue: dividendDisciplineScore(card.pay_hist).value,
-      selfHistValues: [], // 下调次数无逐年序列；n=1 且无同行 → 缺维
+      selfHistValues: useDpsSelf ? dpsSeries : [],
+      extraReasons: useDpsSelf ? ["n=1 用自身 DPS 分位（越高越好）"] : [],
     });
   }
 
@@ -1214,12 +1632,12 @@ export function scoreCard(card, cards) {
       value: fnum(card.pb),
       peersValues: peerVals((c) => fnum(c.pb)),
       higherBetter: false,
-      band: pbBand(card.f100, card.pb),
-      knots: pbKnots(card.f100),
+      band: pbBand(card.f100, card.pb, { l3: l3Of(card) }),
+      knots: pbKnots(card.f100, { l3: l3Of(card) }),
       overheat: null,
       n,
       suspect: false,
-      selfHistValues: [], // 无 PB 年史；n=1 → 缺维
+      selfHistValues: yearHist(card, "pb_hist"),
     });
   }
   if (weights.pe != null) {
@@ -1231,8 +1649,8 @@ export function scoreCard(card, cards) {
       higherBetter: false,
       n,
       suspect: false,
-      selfHistValues: [],
-      extraReasons: ["PE(TTM)池内分位（无个股历史分位；越低越好）"],
+      selfHistValues: yearHist(card, "pe_hist"),
+      extraReasons: ["PE(TTM)同类分位；n=1 用年末 PE 自身分位（越低越好）"],
     });
   }
   if (isCorpCashKind(kind)) {
@@ -1267,7 +1685,7 @@ export function scoreCard(card, cards) {
         overheat: null,
         n,
         suspect: false,
-        selfHistValues: [], // 无负债率年史；n=1 → 缺维
+        selfHistValues: yearHist(card, "debt_hist"),
       });
     }
     if (weights.roic_durability != null) {
@@ -1293,7 +1711,7 @@ export function scoreCard(card, cards) {
         higherBetter: false,
         n,
         displayValue: card.durability_evidence?.gross_margin_5y || card.durability_evidence?.net_margin_5y,
-        selfHistValues: [],
+        selfHistValues: n < 2 ? rollingSigmaHist(card) : [],
       });
     }
   }
@@ -1308,6 +1726,7 @@ export function scoreCard(card, cards) {
       higherBetter: true,
       n,
       displayValue: { growth_pct: dpsGrowthPct(card), dps: dpsHist(card).slice(0, 3) },
+      selfHistValues: dpsYoyHist(card),
       extraReasons: ["近两年 DPS 同比增速"],
     });
     dims.interest_cover = applyNumeric({
@@ -1317,6 +1736,7 @@ export function scoreCard(card, cards) {
       peersValues: peerVals((c) => specialMetric(c, "interest_cover")),
       higherBetter: true,
       n,
+      selfHistValues: specialSeries(card, "interest_cover"),
       extraReasons: ["利息保障倍数（优先于资产负债率）"],
     });
     dims.receivables = applyNumeric({
@@ -1327,6 +1747,7 @@ export function scoreCard(card, cards) {
       higherBetter: false,
       n,
       displayValue: { ar_days: y0.ar_days },
+      selfHistValues: specialSeries(card, "ar_days"),
       extraReasons: ["应收账款周转天数 YSZKZZTS（越低越好）"],
     });
     dims.ocf_quality = applyNumeric({
@@ -1341,18 +1762,38 @@ export function scoreCard(card, cards) {
         profit: (card.fcf_cov || [])[0]?.profit,
         ratio: ocfNiRatio(card),
       },
+      selfHistValues: ocfNiHist(card),
       extraReasons: ["经营现金流/净利润（替代 FCF 覆盖霸权）"],
     });
     dims.earnings_growth = applyNumeric({
       id: "earnings_growth",
       weight: weights.earnings_growth,
-      value: earningsGrowthPct(card),
+      value: n < 2 ? specialSeries(card, "profit_yoy")[0] ?? earningsGrowthPct(card) : earningsGrowthPct(card),
       peersValues: peerVals(earningsGrowthPct),
       higherBetter: true,
       n,
       displayValue: { rev_yoy: y0.rev_yoy, profit_yoy: y0.profit_yoy, blended: earningsGrowthPct(card) },
+      selfHistValues: specialSeries(card, "profit_yoy"),
       extraReasons: ["营收同比与归母净利同比均值"],
     });
+    dims.fcf = applyNumeric({
+      id: "fcf",
+      weight: weights.fcf,
+      value: fcf.value,
+      peersValues: peerVals((c) => fcfMetric(c).value),
+      higherBetter: true,
+      band: fcfBand(fcf.value, fcf.minCover),
+      knots: fcfKnots(),
+      overheat: null,
+      n,
+      suspect: fcf.suspect,
+      selfHistValues: fcfCoverHist(card),
+      extraReasons: ["FCF/年度分红覆盖（与 OCF/净利 并用，路产/公用 capex 大年）"],
+    });
+    if (fcf.minCover != null && fcf.minCover < 1 && dims.fcf.score != null && dims.fcf.score > 50) {
+      dims.fcf.score = 50;
+      dims.fcf.reasons.push("任一年cover<1，该维最多50");
+    }
   }
 
   if (kind === "brand_consumer") {
@@ -1365,6 +1806,7 @@ export function scoreCard(card, cards) {
       higherBetter: true,
       n,
       displayValue: { growth_pct: dpsGrowthPct(card), dps: dpsHist(card).slice(0, 3) },
+      selfHistValues: dpsYoyHist(card),
       extraReasons: ["近两年 DPS 同比增速"],
     });
     dims.contract_liab_trend = applyNumeric({
@@ -1372,14 +1814,14 @@ export function scoreCard(card, cards) {
       weight: weights.contract_liab_trend,
       value: fnum(y0.contract_liab_yoy),
       peersValues: peerVals((c) => specialMetric(c, "contract_liab_yoy")),
-      higherBetter: true,
+      higherBetter: false,
       n,
       displayValue: {
         contract_liab: y0.contract_liab,
         contract_liab_yoy: y0.contract_liab_yoy,
       },
       selfHistValues: specialSeries(card, "contract_liab_yoy"),
-      extraReasons: ["合同负债同比 CONTRACT_LIAB_YOY（渠道打款领先指标；无社会库存）"],
+      extraReasons: ["合同负债同比越低越好（防渠道压货；无社会库存）"],
     });
     dims.receivables = applyNumeric({
       id: "receivables",
@@ -1427,6 +1869,7 @@ export function scoreCard(card, cards) {
         profit_yoy: specialYear(card, 0).profit_yoy,
       },
       extraReasons: ["归母净利 3 年 CAGR；不足则用营收/净利同比均值"],
+      selfHistValues: specialSeries(card, "profit_yoy"),
     });
     dims.gm_trend = applyNumeric({
       id: "gm_trend",
@@ -1440,6 +1883,7 @@ export function scoreCard(card, cards) {
         gm_hist: card.durability_evidence?.gross_margin_5y,
       },
       extraReasons: ["毛利率年变动（吨价/产品结构代理；无吨价字段）"],
+      selfHistValues: gmDeltaHist(card),
     });
   }
 
@@ -1508,6 +1952,7 @@ export function scoreCard(card, cards) {
         higherBetter: true,
         n,
         displayValue: { growth_pct: dpsGrowthPct(card), dps: dpsHist(card).slice(0, 3) },
+        selfHistValues: dpsYoyHist(card),
         extraReasons: ["近两年 DPS 同比增速"],
       });
     }
@@ -1542,6 +1987,7 @@ export function scoreCard(card, cards) {
           yoy_blend: earningsGrowthPct(card),
         },
         extraReasons: ["归母净利 3 年 CAGR；不足则用营收/净利同比均值"],
+      selfHistValues: specialSeries(card, "profit_yoy"),
       });
     }
   }
@@ -1623,6 +2069,7 @@ export function scoreCard(card, cards) {
         yoy_blend: earningsGrowthPct(card),
       },
       extraReasons: ["归母净利 3 年 CAGR；不足则用营收/净利同比均值"],
+      selfHistValues: specialSeries(card, "profit_yoy"),
     });
   }
 
@@ -1660,6 +2107,7 @@ export function scoreCard(card, cards) {
         yoy_blend: earningsGrowthPct(card),
       },
       extraReasons: ["归母净利 3 年 CAGR；不足则用营收/净利同比均值"],
+      selfHistValues: specialSeries(card, "profit_yoy"),
     });
   }
 
@@ -2193,19 +2641,35 @@ export function scoreCard(card, cards) {
   }
 
   const result = totalScore(weights, dims);
+  let total = result.total;
+  const rankTotal = total;
+  let totalCap = null;
+  if (
+    kind === "utility" &&
+    fcf.minCover != null &&
+    fcf.minCover < 1 &&
+    total != null &&
+    total > UTILITY_FCF_TOTAL_CAP
+  ) {
+    totalCap = { cap: UTILITY_FCF_TOTAL_CAP, reason: "任一年FCF cover<1，utility总分帽50" };
+    total = UTILITY_FCF_TOTAL_CAP;
+  }
   return {
     kind,
-    peer: { key: pg.key, n, escalated: pg.escalated },
+    peer: { key: pg.key, n, escalated: pg.escalated, label: pg.label || null, source: pg.source || null },
     anchors: {
       version: "peer-pool",
       f100: normF100(card.f100) || null,
+      l3: l3Of(card) || null,
       sources: {},
       pb_source: "仅池内同类分位",
     },
     dims,
     missing: result.missing,
     numeric_ok: result.missing.length === 0,
-    total: result.total,
+    total,
+    rank_total: rankTotal,
+    total_cap: totalCap,
     rank: null,
     rank_n: n,
     rating: result.rating,
@@ -2217,7 +2681,7 @@ export function assignPeerRanks(cards) {
   const list = Array.isArray(cards) ? cards : [];
   const groups = new Map();
   for (const c of list) {
-    const key = peerGroup(c, list).key || "f100:";
+    const key = peerGroup(c, list).key || "ind:";
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(c);
   }
@@ -2225,12 +2689,16 @@ export function assignPeerRanks(cards) {
     const n = rows.length;
     const scored = rows
       .filter((c) => c.score && c.score.total != null)
-      .sort((a, b) => (b.score.total ?? -1) - (a.score.total ?? -1) || String(a.code).localeCompare(String(b.code)));
+      .sort(
+        (a, b) =>
+          (b.score.rank_total ?? b.score.total ?? -1) - (a.score.rank_total ?? a.score.total ?? -1) ||
+          String(a.code).localeCompare(String(b.code)),
+      );
     let i = 0;
     while (i < scored.length) {
-      const t = scored[i].score.total;
+      const t = scored[i].score.rank_total ?? scored[i].score.total;
       let j = i + 1;
-      while (j < scored.length && scored[j].score.total === t) j += 1;
+      while (j < scored.length && (scored[j].score.rank_total ?? scored[j].score.total) === t) j += 1;
       const rank = i + 1;
       for (let k = i; k < j; k++) {
         scored[k].score.rank = rank;
@@ -2379,6 +2847,28 @@ export function selfTest() {
   if (soloHist.dims.ocf_quality?.score == null) fails.push("n1-ocf-self-hist");
   if (soloHist.dims.pb?.usable) fails.push("n1-pb-should-missing");
 
+  const soloVal = {
+    ...soloHistCard,
+    code: "solo3",
+    f100: "独苗业3",
+    pe: 12,
+    div: 4,
+    pe_hist: [12, 14, 16, 18].map((value, i) => ({ year: String(2025 - i), value })),
+    pb_hist: [1.5, 1.6, 1.8, 2.0].map((value, i) => ({ year: String(2025 - i), value })),
+    yield_hist: [4.0, 3.5, 3.0, 2.8].map((value, i) => ({ year: String(2025 - i), value })),
+    debt_hist: [45, 48, 50, 52].map((value, i) => ({ year: String(2025 - i), value })),
+    special: {
+      kind: "corp",
+      years: [8, 6, 5, 4].map((profit_yoy, i) => ({ year: String(2025 - i), profit_yoy })),
+    },
+  };
+  const soloValScore = scoreCard(soloVal, [soloVal]);
+  if (soloValScore.dims.pe?.score_mode !== "self_hist") fails.push(`n1-pe-hist ${soloValScore.dims.pe?.score_mode}`);
+  if (soloValScore.dims.pb?.score_mode !== "self_hist") fails.push(`n1-pb-hist ${soloValScore.dims.pb?.score_mode}`);
+  if (soloValScore.dims.div_yield?.score_mode !== "self_hist") {
+    fails.push(`n1-yield-hist ${soloValScore.dims.div_yield?.score_mode}`);
+  }
+
   const durable = {
     roic_5y: {
       history: [12, 11.5, 11, 10.5, 10].map((value, i) => ({ year: String(2025 - i), value })),
@@ -2433,10 +2923,21 @@ export function selfTest() {
   const g = peerGroup(cards[0], cards);
   eq(g.escalated, false, "hydro-no-escalate", fails);
   eq(g.n, 5, "hydro-f100-n", fails);
+  const mixedPorts = [
+    { code: "a", f100: "航运港口", industry_f10: { l3: "港口" } },
+    { code: "b", f100: "航运港口", industry_f10: { l3: "港口" } },
+    { code: "c", f100: "航运港口", industry_f10: { l3: "航运" } },
+  ];
+  eq(peerGroup(mixedPorts[0], mixedPorts).n, 2, "port-l3-n", fails);
+  eq(peerGroup(mixedPorts[2], mixedPorts).n, 1, "ship-l3-n", fails);
+  if (peerGroup(mixedPorts[0], mixedPorts).key !== "l3:港口") {
+    fails.push(`port-peer-key ${peerGroup(mixedPorts[0], mixedPorts).key}`);
+  }
   const s = scoreCard(cards[0], cards);
   if (s.kind !== "utility") fails.push(`hydro-kind ${s.kind}`);
   if (!s.numeric_ok) fails.push(`hydro-numeric-ok ${JSON.stringify(s.missing)}`);
-  if (s.dims.pay || s.dims.fcf || s.dims.debt || s.dims.roe) fails.push("utility-must-drop-pay-fcf-debt-roe");
+  if (s.dims.pay || s.dims.debt || s.dims.roe) fails.push("utility-must-drop-pay-debt-roe");
+  if (!s.dims.fcf?.usable) fails.push("utility-fcf-missing");
   if (!s.dims.ocf_quality?.usable) fails.push("utility-ocf-missing");
   if (!s.dims.interest_cover?.usable) fails.push("utility-interest-missing");
   if (!s.dims.dps_growth?.usable) fails.push("utility-dps-growth-missing");

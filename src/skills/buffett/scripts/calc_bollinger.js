@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 用后复权收盘价计算布林带（供 buffett Step 3）。
+ * 用前复权收盘价计算布林带（供 buffett Step 3）。
  *
  * 默认参数与 SKILL.md 一致：
  *   - 日线/周线：20 期，2 倍标准差
@@ -21,6 +21,10 @@ const DEFAULTS = {
   M: { window: 24, nbdev: 2.0 },
 };
 
+/** 近 52 根周收盘最高价；回撤达到或超过该比例则布林到位也只观望。 */
+export const WEEK_PEAK_BARS = 52;
+export const DRAWDOWN_WAIT = 0.2;
+
 function loadPayload(path) {
   const text = path ? fs.readFileSync(path, "utf8") : fs.readFileSync(0, "utf8");
   return JSON.parse(text);
@@ -39,7 +43,7 @@ function toBars(payload) {
   for (const key of ["bars", "data", "rows", "items", "kline", "klines"]) {
     if (Array.isArray(payload?.[key])) return payload[key];
   }
-  throw new Error("输入 JSON 须为 K 线数组，或含 bars/data/rows[]（东财 kline --adjust backward）");
+  throw new Error("输入 JSON 须为 K 线数组，或含 bars/data/rows[]（东财 kline --adjust forward）");
 }
 
 /** ISO 周键 YYYY-Www */
@@ -54,7 +58,7 @@ function isoWeekKey(y, m, d) {
   return `${isoYear}-W${String(weekNo).padStart(2, "0")}`;
 }
 
-/** period: D|W|M。周/月取该周期最后一个交易日的后复权收盘价。 */
+/** period: D|W|M。周/月取该周期最后一个交易日的前复权收盘价。 */
 function resampleCloses(bars, period) {
   const daily = [];
   for (const row of bars) {
@@ -114,6 +118,40 @@ function bollinger(series, window, nbdev) {
   };
 }
 
+/**
+ * 近 lookback 根周收盘最高价及相对回撤（前复权）。
+ * series: [date, close][]，已按日期升序。
+ */
+export function weekPeakDrawdown(series, lookback = WEEK_PEAK_BARS) {
+  const empty = {
+    peak52: null,
+    peak52_date: null,
+    peak52_bars: 0,
+    dd_from_peak: null,
+    dd_from_peak_pct: null,
+  };
+  if (!Array.isArray(series) || !series.length) return empty;
+  const window = series.slice(-lookback).filter((row) => Number.isFinite(row?.[1]) && row[1] > 0);
+  if (!window.length) return empty;
+  let peak = window[0][1];
+  let peakDate = window[0][0];
+  for (const [date, close] of window) {
+    if (close >= peak) {
+      peak = close;
+      peakDate = date;
+    }
+  }
+  const close = window[window.length - 1][1];
+  const dd = (close - peak) / peak;
+  return {
+    peak52: round(peak, 4),
+    peak52_date: peakDate,
+    peak52_bars: window.length,
+    dd_from_peak: round(dd, 6),
+    dd_from_peak_pct: round(dd * 100, 2),
+  };
+}
+
 function round(n, digits) {
   const p = 10 ** digits;
   return Math.round(n * p) / p;
@@ -144,7 +182,7 @@ function main() {
 
   const result = {
     ts_code: meta.ts_code || meta.symbol || null,
-    adj: meta.adj || "backward",
+    adj: meta.adj || "forward",
     bands: {},
   };
 
@@ -153,11 +191,15 @@ function main() {
     const window = args.window != null ? Number(args.window) : defaults.window;
     const nbdev = args.nbdev != null ? Number(args.nbdev) : defaults.nbdev;
     const series = resampleCloses(bars, p);
-    result.bands[p] = { period: p, ...bollinger(series, window, nbdev) };
+    const band = { period: p, ...bollinger(series, window, nbdev) };
+    if (p === "W") Object.assign(band, weekPeakDrawdown(series));
+    result.bands[p] = band;
   }
 
   console.log(JSON.stringify(result, null, 2));
   return 0;
 }
 
-process.exit(main());
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exit(main());
+}

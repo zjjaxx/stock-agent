@@ -16,13 +16,14 @@ import {
   marketFromCode,
   parseArgs,
   parseJsonText,
+  buffettTmp,
   readJsonFile,
   runOpencli,
   secucode,
 } from "./opencli_json.js";
 import { finKindFromF100 } from "./industry_map.js";
 
-const BUNDLE_SCHEMA_VERSION = 3;
+const BUNDLE_SCHEMA_VERSION = 4;
 
 function annualRows(rows, dateKey = "REPORT_DATE") {
   const out = [];
@@ -374,6 +375,7 @@ function quoteOne(code) {
 function extractSpecial(finaAnnual, f100 = "", gincomeAnnual = [], finaAll = [], gbalanceAll = []) {
   const nonintByYear = {};
   const incomeByYear = {};
+  const coverByYear = {};
   for (const row of gincomeAnnual || []) {
     const m = String(row.REPORT_DATE || "").match(/(20\d{2})/);
     if (!m) continue;
@@ -382,6 +384,8 @@ function extractSpecial(finaAnnual, f100 = "", gincomeAnnual = [], finaAll = [],
     if (ratio != null) nonintByYear[y] = ratio;
     const mix = brokerIncomeMix(row);
     if (mix) incomeByYear[y] = mix;
+    const cover = interestCoverFromIncome(row);
+    if (cover != null) coverByYear[y] = cover;
   }
   const contractByYear = {};
   for (const row of gbalanceAll || []) {
@@ -436,6 +440,7 @@ function extractSpecial(finaAnnual, f100 = "", gincomeAnnual = [], finaAll = [],
     const fb = year ? totalRoiFallback[year] : null;
     const mix = year ? incomeByYear[year] || {} : {};
     const cl = year ? contractByYear[year] || {} : {};
+    const coverCalc = year ? coverByYear[year] : null;
     years.push({
       year,
       npl: fnum(row.NONPERLOAN),
@@ -456,7 +461,7 @@ function extractSpecial(finaAnnual, f100 = "", gincomeAnnual = [], finaAll = [],
       pledge_cover: fnum(row.ZYGDSYLZQJZB),
       pledge_risk: fnum(row.ZQZYYWFXZB),
       proprietary_capital: fnum(row.PROPRIETARY_CAPITAL),
-      interest_cover: fnum(row.INTEREST_COVERAGE_RATIO),
+      interest_cover: fnum(row.INTEREST_COVERAGE_RATIO) ?? coverCalc ?? null,
       interest_debt: fnum(row.INTEREST_DEBT_RATIO),
       ar_days: fnum(row.YSZKZZTS),
       inv_days: fnum(row.CHZZTS),
@@ -529,20 +534,41 @@ function extractSpecial(finaAnnual, f100 = "", gincomeAnnual = [], finaAll = [],
   return { kind: null, years, source: "RPT_F10_FINANCE_MAINFINADATA" };
 }
 
+/**
+ * 利息保障倍数回退：MAINFINADATA.INTEREST_COVERAGE_RATIO 常空。
+ * 优先 财务费用-利息支出；没有则用正的财务费用净额。
+ * EBIT 代理 = 营业利润（无则利润总额）。
+ */
+export function interestCoverFromIncome(row) {
+  const ebit = fnum(row?.OPERATE_PROFIT) ?? fnum(row?.TOTAL_PROFIT);
+  const interest =
+    fnum(row?.FE_INTEREST_EXPENSE) > 0
+      ? fnum(row.FE_INTEREST_EXPENSE)
+      : fnum(row?.INTEREST_EXPENSE) > 0
+        ? fnum(row.INTEREST_EXPENSE)
+        : fnum(row?.FINANCE_EXPENSE) > 0
+          ? fnum(row.FINANCE_EXPENSE)
+          : null;
+  if (ebit == null || !(interest > 0)) return null;
+  return ebit / interest;
+}
+
 /** 券商收入结构：手续费/利息/投资占营收%，及各自同比。 */
 export function brokerIncomeMix(row) {
   const toi = fnum(row?.TOTAL_OPERATE_INCOME ?? row?.OPERATE_INCOME);
   if (!(toi > 0)) return null;
-  const fee = fnum(row?.FEE_COMMISSION_INCOME);
-  const ii = fnum(row?.INTEREST_INCOME);
-  const inv = fnum(row?.INVEST_INCOME);
+  const fee = fnum(
+    row?.FEE_COMMISSION_INCOME ?? row?.NET_FEE_AND_COMMISSION ?? row?.FEE_COMMISSION_NI,
+  );
+  const ii = fnum(row?.INTEREST_INCOME ?? row?.NET_INTEREST_INCOME);
+  const inv = fnum(row?.INVEST_INCOME ?? row?.INVEST_NETINCOME);
   return {
     fee_ratio: fee != null ? (fee / toi) * 100 : null,
     interest_ratio: ii != null ? (ii / toi) * 100 : null,
     invest_ratio: inv != null ? (inv / toi) * 100 : null,
-    fee_yoy: fnum(row?.FEE_COMMISSION_INCOME_YOY),
-    interest_yoy: fnum(row?.INTEREST_INCOME_YOY),
-    invest_yoy: fnum(row?.INVEST_INCOME_YOY),
+    fee_yoy: fnum(row?.FEE_COMMISSION_INCOME_YOY ?? row?.NET_FEE_AND_COMMISSION_YOY),
+    interest_yoy: fnum(row?.INTEREST_INCOME_YOY ?? row?.NET_INTEREST_INCOME_YOY),
+    invest_yoy: fnum(row?.INVEST_INCOME_YOY ?? row?.INVEST_NETINCOME_YOY),
   };
 }
 
@@ -571,6 +597,119 @@ export function extractDurabilityEvidence(finaAnnual, kind = "corp") {
   };
 }
 
+function toDateStr(raw) {
+  const m = String(raw || "").match(/(20\d{2})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+function valueAnalysisUrl(code) {
+  const filt = encodeURIComponent(`(SECURITY_CODE="${code}")`);
+  return (
+    "https://datacenter-web.eastmoney.com/api/data/v1/get" +
+    "?reportName=RPT_VALUEANALYSIS_DET" +
+    "&columns=TRADE_DATE,CLOSE_PRICE,PB_MRQ,PE_TTM" +
+    `&filter=${filt}&pageNumber=1&pageSize=1400` +
+    "&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB"
+  );
+}
+
+/** 年末 PE/PB/收盘；跳过未完成的当年，供 n=1 自身分位（不作买点）。 */
+function yearEndValuation(daily, dpsByYear = {}) {
+  const seen = new Set();
+  const thisYear = String(new Date().getFullYear());
+  const pe_hist = [];
+  const pb_hist = [];
+  const yield_hist = [];
+  for (const d of daily || []) {
+    const y = String(d.date || "").slice(0, 4);
+    if (!y || y === thisYear || seen.has(y)) continue;
+    seen.add(y);
+    if (d.pe != null) pe_hist.push({ year: y, value: d.pe, date: d.date });
+    if (d.pb != null) pb_hist.push({ year: y, value: d.pb, date: d.date });
+    const dps = fnum(dpsByYear[y]);
+    if (dps != null && dps > 0 && d.close > 0) {
+      yield_hist.push({ year: y, value: (dps / d.close) * 100, date: d.date });
+    }
+    if (pe_hist.length >= 5 && pb_hist.length >= 5) break;
+  }
+  return { pe_hist, pb_hist, yield_hist };
+}
+
+function fetchValuationYearEnds(code, session, dpsByYear = {}) {
+  const payload = browserFetchJson(session, valueAnalysisUrl(code), { sleepS: 0.75 });
+  const rows = datacenterRows(payload);
+  const daily = [];
+  for (const r of rows) {
+    const date = toDateStr(r.TRADE_DATE);
+    const close = fnum(r.CLOSE_PRICE);
+    if (!date || !(close > 0)) continue;
+    daily.push({ date, close, pe: fnum(r.PE_TTM), pb: fnum(r.PB_MRQ) });
+  }
+  return yearEndValuation(daily, dpsByYear);
+}
+
+function dpsByYearFromPay(payHist) {
+  const out = {};
+  for (const row of payHist || []) {
+    if (row.year && fnum(row.dps) != null) out[String(row.year)] = fnum(row.dps);
+  }
+  return out;
+}
+
+function isFinKind(kind) {
+  return kind === "bank" || kind === "insurance" || kind === "broker";
+}
+
+function bundleFresh(r) {
+  if (!r?.fetch_ok || r.schema_version !== BUNDLE_SCHEMA_VERSION) return false;
+  const kind = r.special?.kind;
+  if (!isFinKind(kind) && (r.fcf_cov || []).length < 5) return false;
+  if (kind === "broker") {
+    const y0 = r.special?.years?.[0] || {};
+    if (y0.fee_ratio == null && y0.fee_yoy == null) return false;
+  }
+  if ((r.pe_hist || []).length < 3 && (r.pb_hist || []).length < 3) return false;
+  return true;
+}
+
+function attachValuation(bundle, session, code) {
+  const val = fetchValuationYearEnds(code, session, dpsByYearFromPay(bundle.pay_hist));
+  bundle.pe_hist = val.pe_hist;
+  bundle.pb_hist = val.pb_hist;
+  bundle.yield_hist = val.yield_hist;
+  bundle.valuation_source = "RPT_VALUEANALYSIS_DET";
+}
+
+function enrichBundle(existing, code, market, session, f100 = "") {
+  const kind = existing.special?.kind || finKindFromF100(f100);
+  const needFull =
+    (!isFinKind(kind) && (existing.fcf_cov || []).length < 5) ||
+    (kind === "broker" && existing.special?.years?.[0]?.fee_ratio == null && existing.special?.years?.[0]?.fee_yoy == null);
+  if (needFull) {
+    const bundle = buildBundle(code, market, session, f100);
+    bundle.schema_version = BUNDLE_SCHEMA_VERSION;
+    return bundle;
+  }
+  const bundle = { ...existing, schema_version: BUNDLE_SCHEMA_VERSION };
+  if (!isFinKind(kind) && (bundle.debt_hist || []).length < 3) {
+    const sc = secucode(code, market);
+    const dup = fetchReport(session, "RPT_F10_FINANCE_DUPONT", sc, {
+      pageSize: 48,
+      sortColumns: "REPORT_DATE",
+    });
+    bundle.debt_hist = byDateDesc(annualRows(dup))
+      .slice(0, 8)
+      .map((row) => {
+        const year = String(row.REPORT_DATE || "").match(/(20\d{2})/)?.[1];
+        const value = fnum(row.DEBT_ASSET_RATIO);
+        return year && value != null ? { year, value } : null;
+      })
+      .filter(Boolean);
+  }
+  attachValuation(bundle, session, code);
+  return bundle;
+}
+
 function buildBundle(code, market, session, f100 = "") {
   const sc = secucode(code, market);
   const org = fetchReport(session, "RPT_F10_ORG_BASICINFO", sc, { pageSize: 5 });
@@ -579,7 +718,7 @@ function buildBundle(code, market, session, f100 = "") {
     sortColumns: "REPORT_DATE",
   });
   const cash = fetchReport(session, "RPT_F10_FINANCE_GCASHFLOW", sc, {
-    pageSize: 12,
+    pageSize: 24,
     sortColumns: "REPORT_DATE",
   });
   const compre = fetchReport(session, "RPT_F10_DIVIDEND_COMPRE", sc, {
@@ -597,9 +736,16 @@ function buildBundle(code, market, session, f100 = "") {
   });
   const kindGuess = finKindFromF100(f100);
   let gincomeAnnual = [];
-  if (kindGuess === "bank") {
+  if (
+    kindGuess === "bank" ||
+    kindGuess === "broker" ||
+    kindGuess === "utility" ||
+    kindGuess === "resource_cycle" ||
+    kindGuess === "equip_mfg" ||
+    kindGuess === "infra_construction"
+  ) {
     const gin = fetchReport(session, "RPT_F10_FINANCE_GINCOME", sc, {
-      pageSize: 16,
+      pageSize: 24,
       sortColumns: "REPORT_DATE",
     });
     gincomeAnnual = byDateDesc(annualRows(gin));
@@ -637,6 +783,13 @@ function buildBundle(code, market, session, f100 = "") {
   const roeVals = roeHist.slice(0, 3).map((x) => x.roe);
   const roe3 = roeVals.length ? roeVals.reduce((a, b) => a + b, 0) / roeVals.length : null;
   const debt = dupA.length ? fnum(dupA[0].DEBT_ASSET_RATIO) : null;
+  const debt_hist = dupA.slice(0, 8)
+    .map((row) => {
+      const year = String(row.REPORT_DATE || "").match(/(20\d{2})/)?.[1];
+      const value = fnum(row.DEBT_ASSET_RATIO);
+      return year && value != null ? { year, value } : null;
+    })
+    .filter(Boolean);
 
   const profitByYear = {};
   const ncoByYear = {};
@@ -658,7 +811,7 @@ function buildBundle(code, market, session, f100 = "") {
   }
 
   const fcfCov = [];
-  for (const yrRow of cashA.slice(0, 2)) {
+  for (const yrRow of cashA.slice(0, 5)) {
     const ocf = fnum(yrRow.NETCASH_OPERATE);
     const capex = fnum(yrRow.CONSTRUCT_LONG_ASSET);
     const rd = String(yrRow.REPORT_DATE || "");
@@ -718,7 +871,7 @@ function buildBundle(code, market, session, f100 = "") {
   }
   const fcfPatched = resolveFcfDivAmounts(fcfCov, picked);
 
-  return {
+  const bundle = {
     schema_version: BUNDLE_SCHEMA_VERSION,
     code,
     market,
@@ -739,6 +892,7 @@ function buildBundle(code, market, session, f100 = "") {
     roe_vals: roeVals,
     roe_hist: roeHist,
     debt,
+    debt_hist,
     pay_ratio: picked.pay_ratio,
     pay_ratio_source: picked.pay_ratio_source,
     pay_ratio_year: picked.pay_ratio_year,
@@ -769,6 +923,19 @@ function buildBundle(code, market, session, f100 = "") {
       mainfina: fina.length,
     },
   };
+  attachValuation(bundle, session, code);
+  return bundle;
+}
+
+function loadWarnCodes() {
+  try {
+    const facts = readJsonFile(buffettTmp("buffett_step2_facts.json"));
+    return new Set(
+      (facts.cards || []).filter((c) => !c.score?.numeric_ok).map((c) => String(c.code)),
+    );
+  } catch {
+    return null;
+  }
 }
 
 function loadPool(path) {
@@ -859,6 +1026,19 @@ function selfTestResolveFcf() {
   });
   if (!mix || Math.abs(mix.fee_ratio - 40) > 1e-6) fails.push(`broker-fee-ratio ${mix?.fee_ratio}`);
   if (!mix || mix.invest_yoy !== 20) fails.push(`broker-invest-yoy ${mix?.invest_yoy}`);
+  const icFe = interestCoverFromIncome({
+    OPERATE_PROFIT: 200,
+    FE_INTEREST_EXPENSE: 50,
+  });
+  if (icFe == null || Math.abs(icFe - 4) > 1e-6) fails.push(`interest-cover-fe ${icFe}`);
+  const icNet = interestCoverFromIncome({
+    OPERATE_PROFIT: 150,
+    FINANCE_EXPENSE: 30,
+  });
+  if (icNet == null || Math.abs(icNet - 5) > 1e-6) fails.push(`interest-cover-finance ${icNet}`);
+  if (interestCoverFromIncome({ OPERATE_PROFIT: 100, FINANCE_EXPENSE: -20 }) != null) {
+    fails.push("interest-cover-should-skip-net-income");
+  }
   return fails;
 }
 
@@ -894,6 +1074,7 @@ function main() {
     items = [{ code: code.split(".", 2)[0], market: mkt }];
   }
 
+  const warnCodes = loadWarnCodes();
   const done = {};
   const outPath = args.output || null;
   if (outPath) fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -901,7 +1082,7 @@ function main() {
     const prev = readJsonFile(outPath);
     const rowsPrev = Array.isArray(prev) ? prev : prev.rows || [];
     for (const r of rowsPrev) {
-      if (r.code && r.fetch_ok && r.schema_version === BUNDLE_SCHEMA_VERSION) done[r.code] = r;
+      if (r.code && r.fetch_ok) done[r.code] = r;
     }
   }
 
@@ -911,14 +1092,24 @@ function main() {
     const code = String(item.code || "").split(".", 2)[0];
     const market = String(item.market || item.MARKET_SHORT_NAME || "");
     const name = String(item.name || "");
-    if (done[code]) {
+    if (done[code] && bundleFresh(done[code])) {
       results.push(done[code]);
       console.log(`${String(i + 1).padStart(2, "0")}/${items.length} ${code} skip-resume`);
       continue;
     }
+    if (done[code] && warnCodes && warnCodes.size && !warnCodes.has(code)) {
+      results.push(done[code]);
+      console.log(`${String(i + 1).padStart(2, "0")}/${items.length} ${code} skip-ok`);
+      continue;
+    }
     let bundle;
     try {
-      bundle = buildBundle(code, market, args.session, item.f100);
+      if (done[code]) {
+        bundle = enrichBundle(done[code], code, market, args.session, item.f100);
+        console.log(`${String(i + 1).padStart(2, "0")}/${items.length} ${code} enrich pe=${(bundle.pe_hist || []).length} fcf=${(bundle.fcf_cov || []).length}`);
+      } else {
+        bundle = buildBundle(code, market, args.session, item.f100);
+      }
       bundle.name = name || bundle.quote?.name;
     } catch (exc) {
       bundle = {

@@ -161,16 +161,68 @@ function pickRef(entries, pred) {
   throw new Error("找不到目标元素");
 }
 
+function waitVisibleMainItem(session, text, { timeoutMs = 15000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  const js = `(function(){
+  var want=${JSON.stringify(text)};
+  var items=document.querySelectorAll(".listItem.main-item");
+  for(var i=0;i<items.length;i++){
+    var e=items[i];
+    if((e.textContent||"").trim()!==want) continue;
+    var r=e.getBoundingClientRect();
+    if(r.width>0&&r.height>0) return "1";
+  }
+  return "0";
+})()`;
+  while (Date.now() < deadline) {
+    const ok = evalJs(session, js).trim().split(/\r?\n/).pop();
+    if (ok === "1") {
+      const entries = findRef(session, { css: ".listItem.main-item" });
+      return pickRef(entries, (e) => e.text === text);
+    }
+    sleep(400);
+  }
+  throw new Error(`等待可见条件项超时: ${text}`);
+}
+
 function setMarketCap(session) {
-  const entries = findRef(session, { css: ".listItem.main-item" });
-  clickRef(session, pickRef(entries, (e) => e.text === "总市值"));
-  sleep(400);
+  const ref = waitVisibleMainItem(session, "总市值");
+  clickRef(session, ref);
+  sleep(500);
   const opts = findRef(session, { css: ".pickerPopoverContainer .listItem" });
   clickRef(session, pickRef(opts, (e) => e.text === ">500亿"));
-  sleep(200);
-  const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
-  clickRef(session, Number(btns[0].ref));
-  sleep(350);
+  sleep(300);
+  // 部分版本点选项即落 chip，确定按钮可能已不在；有则点，无则靠 chip 验收
+  const btns = findRefSoft(session, {
+    css: ".pickerPopoverContainer .el-button--primary",
+  });
+  if (btns.length) {
+    clickRef(session, Number(btns[0].ref));
+    sleep(350);
+  }
+  const chipList = chips(session);
+  if (!chipList.some((x) => String(x).includes("总市值>500亿"))) {
+    throw new Error(`市值 chip 未落地: ${JSON.stringify(chipList)}`);
+  }
+}
+
+function clickFundamentalsTab(session) {
+  // 优先 CSS：页面上另有导航文案「基本面」，find --text 易点错
+  try {
+    clickCss(session, "#tab-基本面");
+  } catch {
+    const tabs = findRef(session, { text: "基本面" });
+    clickRef(
+      session,
+      pickRef(
+        tabs,
+        (e) =>
+          e.attrs?.id === "tab-基本面" || (e.text === "基本面" && e.role === "tab"),
+      ),
+    );
+  }
+  sleep(400);
+  waitVisibleMainItem(session, "总市值");
 }
 
 /**
@@ -182,8 +234,8 @@ function setDividend(session, loStr, { attempts = 3 } = {}) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       dismissPopover(session);
-      const entries = findRef(session, { css: ".listItem.main-item" });
-      clickRef(session, pickRef(entries, (e) => e.text === "最新股息率"));
+      const ref = waitVisibleMainItem(session, "最新股息率");
+      clickRef(session, ref);
       sleep(500);
       const inputs = findRef(session, { css: ".pickerPopoverContainer .el-input__inner" });
       if (inputs.length < 2) {
@@ -566,16 +618,7 @@ function main() {
     const w = oc(session, ["wait", "text", "条件选股", "--timeout", "20000"], 30_000);
     if (w.returncode !== 0) throw new Error("wait 条件选股 失败");
 
-    const tabs = findRef(session, { text: "基本面" });
-    clickRef(
-      session,
-      pickRef(
-        tabs,
-        (e) =>
-          e.attrs?.id === "tab-基本面" || (e.text === "基本面" && e.role === "tab"),
-      ),
-    );
-    sleep(300);
+    clickFundamentalsTab(session);
     setMarketCap(session);
     const c1 = chips(session);
     console.log(`chips_after_mkt=${JSON.stringify(c1)}`);

@@ -82,6 +82,9 @@ export function formatDimAnchor(dimId, _f100 = "") {
     case "capex_discipline":
       return "池内同类分位（资本开支/经营现金流越低越好）";
     case "contract_liab_trend":
+      if (/白酒|饮料|乳品|调味|食品|中药|家居|广告|零售|啤酒/.test(String(_f100))) {
+        return "池内同类分位（合同负债同比越低越好；防渠道压货）";
+      }
       return "池内同类分位（合同负债同比越高越好；渠道打款）";
     case "gm_trend":
       return "池内同类分位（毛利率年变动越高越好；吨价代理）";

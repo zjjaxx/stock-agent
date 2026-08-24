@@ -17,7 +17,7 @@ import { buffettTmp, parseArgs, readJsonFile } from "./opencli_json.js";
 import { formatDimAnchor, formatScoreAnchorFooter } from "./anchor_display.js";
 import { collectRedFlags, fcfMagnitudeGap } from "./red_lines.js";
 import { WEIGHTS, assignPeerRanks, formatPeerRank, scoreCard } from "./score_numeric.js";
-import { finKindFromF100, isCorpCashKind } from "./industry_map.js";
+import { finKindFromCard, isCorpCashKind } from "./industry_map.js";
 
 function fnum(x) {
   if (x == null || x === "") return null;
@@ -37,10 +37,11 @@ function yiFromCap(cap) {
   return n >= 1e6 ? n / 1e8 : n;
 }
 
-function industryRef(f100) {
+function industryRef(f100, l3 = "") {
   return {
     f100: f100 || "—",
-    text: `f100=${f100 || "无"}；评分尺=硬筛通过池内同类分位；n=1 时自身历史≥3 年否则缺维`,
+    l3: l3 || null,
+    text: `f100=${f100 || "无"}${l3 ? `；l3=${l3}` : ""}；评分尺=硬筛通过池内同三级行业分位（无 l3 则 f100）；n=1 时自身历史≥3 年否则缺维`,
   };
 }
 
@@ -158,14 +159,15 @@ function durabilityEvidenceLines(evidence, payHist) {
 
 function buildCard(row, f10, bondY) {
   const f100 = row.f100 || f10.industry?.l2 || "";
-  const ref = industryRef(f100);
+  const l3 = f10.industry?.l3 || "";
+  const ref = industryRef(f100, l3);
   const q = f10.quote || {};
   const name = String(q.name || row.name || "").replace(/^(XD|XR|DR)/, "").replace(/ /g, "");
   const mktYi = fnum(row.mkt_yi) ?? yiFromCap(q.marketCap);
   const pb = fnum(q.priceBook) ?? fnum(row.pb);
   const price = fnum(q.price) ?? fnum(row.price);
   const covers = (f10.fcf_cov || []).map((x) => x.cover).filter((x) => x != null);
-  const finKind = finKindFromF100(f100);
+  const finKind = finKindFromCard({ f100, industry_f10: f10.industry });
   const mag =
     isCorpCashKind(finKind) &&
     finKind !== "utility" &&
@@ -226,6 +228,10 @@ function buildCard(row, f10, bondY) {
     roe_hist: f10.roe_hist || [],
     pay_hist: f10.pay_hist || [],
     debt: fnum(f10.debt),
+    debt_hist: f10.debt_hist || [],
+    pe_hist: f10.pe_hist || [],
+    pb_hist: f10.pb_hist || [],
+    yield_hist: f10.yield_hist || [],
     fcf_cov: f10.fcf_cov || [],
     special: {
       ...(f10.special || {}),
@@ -301,7 +307,7 @@ function renderScoreBlock(score) {
     const d = score.dims[id];
     if (!d) continue;
     const val = dimValueText(d);
-    const anchorText = formatDimAnchor(id, score.anchors?.f100);
+    const anchorText = formatDimAnchor(id, [score.anchors?.l3, score.anchors?.f100].filter(Boolean).join(" "));
     L.push(
       `| ${d.label} | ${val} | ${anchorText} | ${d.pct == null ? "—" : fmt(d.pct, 0)} | ${d.usable ? d.score : "—"} | ${Math.round(d.weight * 100)}% |`,
     );
@@ -324,7 +330,7 @@ function renderMd(step1, bond, cards, paths) {
   L.push(`# Buffett Step2 事实卡（数字维已评分）`);
   L.push("");
   L.push(
-    "> 总分全部由脚本按「同类（同一 f100）分位」生成。knot/过热帽仅对照不进得分。经营壁垒仅作不计分备注；hard 红线排除今日建议。禁止重打维度或手算总分。",
+    "> 总分全部由脚本按「同类（同一东财三级行业，无 l3 则 f100）分位」生成。knot/过热帽仅对照不进得分。经营壁垒仅作不计分备注；hard 红线排除今日建议。禁止重打维度或手算总分。",
   );
   L.push("");
   L.push("## 池摘要");
@@ -365,7 +371,7 @@ function renderMd(step1, bond, cards, paths) {
   for (const c of cards) {
     L.push(`### ${c.code} ${c.name}`);
     L.push("");
-    L.push(`- 行业：东财 f100 **${c.f100 || "—"}**${c.f100_raw && c.f100_raw !== c.f100 ? `（原始 ${c.f100_raw}）` : ""}`);
+    L.push(`- 行业：东财 f100 **${c.f100 || "—"}**${c.f100_raw && c.f100_raw !== c.f100 ? `（原始 ${c.f100_raw}）` : ""}${c.industry_f10?.l3 ? `；三级 **${c.industry_f10.l3}**` : ""}`);
     L.push(`- 画像参考（非硬公式）：${c.industry_ref.text}`);
     L.push(`- 实控人：${c.controller || "—"}；控股：${c.holder || "—"}`);
     L.push(

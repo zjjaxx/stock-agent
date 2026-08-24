@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 批量计算连续现金分红年数（buffett Step 1）。
+ * 批量计算连续现金分红年数（buffett Step 1 挂卡展示；不作硬筛剔除）。
  *
  * 用法:
  *   node fetch_dividend_streak.js 600900.SH

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Step 1 硬门槛初筛（连续分红 / 股息缺失）。
+ * Step 1 硬门槛初筛（股息缺失）；连续分红年限只写入结果、不作剔除。
  * 市值只在 Step 0 召回（>500亿），此处不再剔除。
  * 行业来自东财 f100（fetch_industry.js），供 Step2 池内同类分位。
  *
@@ -95,7 +95,6 @@ function main() {
     const div = row.div;
     const reasons = [];
     if (div == null) reasons.push("股息缺失");
-    if (!st.pass_div_years) reasons.push(`连续分红${st.div_streak ?? 0}`);
     let ratio = null;
     if (div != null && bond > 0) {
       ratio = Number(div) / bond;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 东财行业名 → 策略类别 A–H（画像锚；数字维打分见 score_numeric.js）。
+ * 东财行业名 → 策略类别 A–H（画像锚）与 fin_kind（分册/估值闸门）。
  * 只匹配行业字段（f100 / BOARD_NAME），禁止用股票简称或代码名单。
  *
  * 用法:
@@ -86,6 +86,16 @@ export function peerMeta(card = {}) {
   return { key: "ind:", label: "", source: null, f100: "" };
 }
 
+/** 报告分组标题：优先 l3，并在与 f100 不同时附带 f100。 */
+export function industryDisplayKey(card) {
+  const m = peerMeta(card);
+  if (!m.label) return "未知行业";
+  if (m.source === "l3" && m.f100 && m.f100 !== m.label) {
+    return `${m.label}（f100=${m.f100}）`;
+  }
+  return m.label;
+}
+
 /** 先匹配更具体的行业名；同一字符串只取第一条命中。 */
 const RULES = [
   { cls: "E", re: /银行/, name: "银行", cycle: false },
@@ -110,8 +120,8 @@ export function normalizeIndustry(raw) {
 }
 
 /**
- * 权重表种类只认东财行业字段（优先 l3，过细回退 f100），禁止用不良/偿付/NIM 字段反推。
- * 证券/多元金融走 broker；非金按生意形态拆模板，未命中回 corp。
+ * 生意形态种类只认东财行业字段（优先 l3，过细回退 f100），禁止用不良/偿付/NIM 字段反推。
+ * 证券/多元金融走 broker；非金按生意形态拆模板，未命中回 corp。用于报告分册。
  */
 export const FIN_KINDS = [
   "bank",

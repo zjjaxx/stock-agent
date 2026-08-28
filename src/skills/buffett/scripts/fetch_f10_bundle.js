@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 抓取个股 F10 深度字段包（buffett Step 2；browser 直开 datacenter）。
+ * 抓取个股 F10 深度字段包（buffett Step1 事实卡；browser 直开 datacenter）。
  *
  * 用法:
  *   node fetch_f10_bundle.js 600900.SH -o tmp/600900_f10.json
@@ -768,7 +768,7 @@ function buildBundle(code, market, session, f100 = "") {
   const dupAnnual = byDateDesc(annualRows(dup));
   const cashAnnual = byDateDesc(annualRows(cash));
   const finaAnnual = byDateDesc(annualRows(fina));
-  // 财务评分只认年报；识别失败必须暴露缺口，禁止用季度序列冒充多年历史。
+  // 财务序列只认年报；识别失败必须暴露缺口，禁止用季度序列冒充多年历史。
   const dupA = dupAnnual;
   const cashA = cashAnnual;
   const finaA = finaAnnual;
@@ -931,7 +931,9 @@ function loadWarnCodes() {
   try {
     const facts = readJsonFile(buffettTmp("buffett_step2_facts.json"));
     return new Set(
-      (facts.cards || []).filter((c) => !c.score?.numeric_ok).map((c) => String(c.code)),
+      (facts.cards || [])
+        .filter((c) => (c.data_gaps || []).length > 0 || c.fetch_ok === false)
+        .map((c) => String(c.code)),
     );
   } catch {
     return null;

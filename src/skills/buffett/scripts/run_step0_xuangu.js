@@ -190,7 +190,12 @@ function setMarketCap(session) {
   clickRef(session, ref);
   sleep(500);
   const opts = findRef(session, { css: ".pickerPopoverContainer .listItem" });
-  clickRef(session, pickRef(opts, (e) => e.text === ">500亿"));
+  const labels = opts.map((e) => String(e.text || ""));
+  const want = ">1000亿";
+  if (!labels.some((t) => t === want || t.includes("1000亿"))) {
+    throw new Error(`市值选项无 ${want}，可见: ${JSON.stringify(labels.slice(0, 20))}`);
+  }
+  clickRef(session, pickRef(opts, (e) => e.text === want || String(e.text || "").includes("1000亿")));
   sleep(300);
   // 部分版本点选项即落 chip，确定按钮可能已不在；有则点，无则靠 chip 验收
   const btns = findRefSoft(session, {
@@ -201,8 +206,8 @@ function setMarketCap(session) {
     sleep(350);
   }
   const chipList = chips(session);
-  if (!chipList.some((x) => String(x).includes("总市值>500亿"))) {
-    throw new Error(`市值 chip 未落地: ${JSON.stringify(chipList)}`);
+  if (!chipList.some((x) => String(x).includes("总市值>1000亿") || String(x).includes("1000亿"))) {
+    throw new Error(`市值 chip 未落地 want=>1000亿: ${JSON.stringify(chipList)}`);
   }
 }
 
@@ -622,8 +627,8 @@ function main() {
     setMarketCap(session);
     const c1 = chips(session);
     console.log(`chips_after_mkt=${JSON.stringify(c1)}`);
-    if (!c1.some((x) => x.includes("总市值>500亿"))) {
-      throw new Error(`市值 chip 不正确: ${JSON.stringify(c1)}`);
+    if (!c1.some((x) => x.includes("总市值>1000亿") || x.includes("1000亿"))) {
+      throw new Error(`市值 chip 不正确 want=>1000亿: ${JSON.stringify(c1)}`);
     }
 
     const c2 = setDividend(session, floor.loStr);

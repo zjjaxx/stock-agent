@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Step 2 红线机械提示（一票否决由 Agent 复核）。
+ * Step1 红线机械提示（一票否决由 Agent 复核）。
  *
  * hard：默认倾向终评回避（仍须 Agent 复核属实）。
  * soft：提示/观察，不自动一票否决（如特别分红且 FCF 覆盖健康）。

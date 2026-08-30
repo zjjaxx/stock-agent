@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * opencli browser / adapter 输出解析公共库（buffett 抓数脚本共用）。
+ * opencli browser / adapter 输出解析公共库（rightside 抓数脚本共用）。
  *
  * 本轮实跑约定：
  * - browser 直开 API URL → eval document.body.innerText → JSON
  * - opencli 可能在 stdout 夹带 upgrade banner，取首尾大括号/中括号解析
- * - 落盘缓存统一用 `~/Desktop/temp/`（见 buffettTmp），禁止默认写系统 /tmp 或仓库 tmp/
+ * - 落盘缓存统一用 `~/Desktop/temp/`（见 tmpPath），禁止默认写系统 /tmp 或仓库 tmp/
  */
 
 import { spawnSync } from "node:child_process";
@@ -15,15 +15,15 @@ import os from "node:os";
 import path from "node:path";
 
 /** 缓存根：`~/Desktop/temp`，不存在则创建。 */
-export function buffettTmpDir() {
+export function tmpDir() {
   const dir = path.join(os.homedir(), "Desktop", "temp");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
 /** `~/Desktop/temp/<name>` 的绝对路径。 */
-export function buffettTmp(name) {
-  return path.join(buffettTmpDir(), name);
+export function tmpPath(name) {
+  return path.join(tmpDir(), name);
 }
 
 export function stripJsonText(raw) {
@@ -77,17 +77,6 @@ export function browserEval(session, js, { timeoutMs = 60_000 } = {}) {
     throw new Error(`browser eval 失败 (exit ${proc.returncode}): ${err.slice(0, 300)}`);
   }
   return proc.stdout || "";
-}
-
-export function browserWaitText(session, text, { timeoutMs = 20_000 } = {}) {
-  const proc = runOpencli(
-    ["browser", session, "wait", "text", text, "--timeout", String(timeoutMs)],
-    { timeoutMs: timeoutMs + 10_000 },
-  );
-  if (proc.returncode !== 0) {
-    const err = (proc.stderr || proc.stdout || "").trim();
-    throw new Error(`wait text ${JSON.stringify(text)} 失败: ${err.slice(0, 300)}`);
-  }
 }
 
 function sleep(ms) {
@@ -227,14 +216,6 @@ export function browserFetchJson(session, url, { sleepS = 0.7, retries = 3 } = {
   throw new Error(`browser_fetch_json 失败: ${url} (${lastErr})`);
 }
 
-export function secucode(code, market) {
-  const c = String(code).trim();
-  const m = String(market).trim().toUpperCase();
-  if (c.includes(".")) return c.toUpperCase();
-  if (!["SH", "SZ", "BJ"].includes(m)) throw new Error(`无效市场: ${market}`);
-  return `${c}.${m}`;
-}
-
 /** push2his secid：沪 1.xxxxxx，深/北 0.xxxxxx */
 export function secid(code, market) {
   let c = String(code).trim();
@@ -276,28 +257,6 @@ export function parseYiNumber(raw) {
   else if (unit === "亿") v *= 1e8;
   else if (unit === "万") v *= 1e4;
   return v;
-}
-
-export function datacenterUrl(
-  reportName,
-  sc,
-  { pageSize = 50, sortColumns = null, sortTypes = "-1" } = {},
-) {
-  const filt = encodeURIComponent(`(SECUCODE="${sc}")`);
-  let url =
-    "https://datacenter.eastmoney.com/securities/api/data/v1/get" +
-    `?reportName=${reportName}&columns=ALL&filter=${filt}` +
-    `&pageNumber=1&pageSize=${pageSize}&source=HSF10&client=PC`;
-  if (sortColumns) {
-    url += `&sortTypes=${sortTypes}&sortColumns=${sortColumns}`;
-  }
-  return url;
-}
-
-export function datacenterRows(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
-  const data = payload.result?.data;
-  return Array.isArray(data) ? data : [];
 }
 
 export function readJsonFile(path) {

@@ -42,11 +42,11 @@ export const searchAgentPrompt = `
 | 任务类型 | 优先 skill | 说明 |
 |----------|------------|------|
 | 选股、行情、基本面、分红、公告等事实查询 | \`smart-search\`（必要时先看 \`opencli-usage\`） | 按 skill 选源与限频；金融站点优先 |
-| 价值投资评估、买卖节奏、安全边际 | \`buffett\` | 在已有候选/数据上做分析；缺数先用 smart-search 补再评 |
+| 右侧交易、突破/回踩买点、趋势阶段判断 | \`rightside\` | 只看价格与量能（30 周均线 + 相对强度）；缺数先用 smart-search 补再评 |
 | 新闻 / 舆情 / 政策 / 公司背景 | \`smart-search\` | 按 skill 做源选择与限频 |
 | 浏览器驱动、站点 sitemap、adapter 修复 | 对应 \`opencli-*\` skill | 仅在上述路径不够时使用 |
 
-同一任务可串联多个 skill（例：smart-search 出池/补数 → buffett 分析）。
+同一任务可串联多个 skill（例：smart-search 出池/补数 → rightside 分析）。
 读 skill 用 read_file 打开 \`/src/skills/<name>/SKILL.md\`（及它指向的 references）；读完立即按 skill 执行，不要逛其它源码。
 
 # 工具与兜底
@@ -71,5 +71,5 @@ export const searchAgentPrompt = `
 - 标明数据来源与所用 skill。
 - 空结果、NO_DATA、RATE_LIMITED、解析失败时如实回报原因与已尝试条件，禁止编造。
 - RATE_LIMITED 时停止连打，说明后再试。
-- 返回检索/分析结论与必要上下文；价值分析按 buffett skill 格式，勿另写无关长文。
+- 返回检索/分析结论与必要上下文；技术位分析按 rightside skill 格式，勿另写无关长文。
 `.trim();

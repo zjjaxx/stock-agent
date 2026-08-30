@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
- * Step1 行业：东财 push2 ulist `f100`（东财行业名），禁止用股票简称猜。
+ * Step1 行业标注：东财 push2 ulist `f100`（东财行业名），禁止用股票简称猜。
+ *
+ * 右侧交易没有基本面硬筛，本步只做两件事：给全池挂上 f100，并把带 f100 的池落成
+ * Step2 的输入（--pass-json）。f100 缺失不剔除，条件2 标「未知（参考）」不拦买点。
  *
  * 用法:
- *   node fetch_industry.js --pool tmp/buffett_pool.json -o tmp/buffett_industry.json
+ *   node fetch_industry.js --pool ~/Desktop/temp/rightside_pool.json \
+ *     -o ~/Desktop/temp/rightside_industry.json \
+ *     --pass-json ~/Desktop/temp/rightside_pass_pool.json
  */
 
 import { spawnSync } from "node:child_process";
@@ -62,7 +67,7 @@ function diffRows(payload) {
   return Array.isArray(diff) ? diff : [];
 }
 
-export function fetchIndustryForPool(pool, { session = "buffett-industry" } = {}) {
+export function fetchIndustryForPool(pool, { session = "rightside-industry" } = {}) {
   const items = [];
   for (const row of pool) {
     const code = String(row.code || row.SECURITY_CODE || "").split(".", 2)[0];
@@ -107,12 +112,37 @@ export function fetchIndustryForPool(pool, { session = "buffett-industry" } = {}
   });
 }
 
+/** 池行 + f100 合并成 Step2 的输入；ulist 只回 f12/f14/f100，市值等字段仍取池行。 */
+function mergePool(pool, rows) {
+  const byCode = {};
+  for (const r of rows) byCode[String(r.code)] = r;
+  return pool
+    .map((row) => {
+      const code = String(row.code || "").split(".", 2)[0];
+      const hit = byCode[code];
+      if (!hit) return null;
+      return {
+        code,
+        name: row.name || hit.name || "",
+        market: row.market || hit.market || null,
+        mkt_yi: row.mkt_yi ?? null,
+        price: row.price ?? null,
+        f100: hit.f100,
+        f100_raw: hit.f100_raw,
+        industry_source: hit.source,
+      };
+    })
+    .filter(Boolean);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2), {
-    defaults: { session: "buffett-industry" },
+    defaults: { session: "rightside-industry" },
   });
   if (!args.pool) {
-    console.error("usage: node fetch_industry.js --pool PATH [-o PATH]");
+    console.error(
+      "usage: node fetch_industry.js --pool PATH [-o PATH] [--pass-json PATH]",
+    );
     return 1;
   }
   const pool = loadPool(args.pool);
@@ -120,6 +150,14 @@ function main() {
   const text = `${JSON.stringify(rows, null, 2)}\n`;
   if (args.output) fs.writeFileSync(args.output, text, "utf8");
   else console.log(text);
+
+  const passJson = args.passJson || args["pass-json"];
+  if (passJson) {
+    const merged = mergePool(pool, rows);
+    fs.writeFileSync(passJson, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+    console.log(`PASS_POOL=${passJson} M=${merged.length}`);
+  }
+
   const withF100 = rows.filter((r) => r.f100).length;
   console.log(`industry N=${rows.length} with_f100=${withF100} missing=${rows.length - withF100}`);
   return 0;

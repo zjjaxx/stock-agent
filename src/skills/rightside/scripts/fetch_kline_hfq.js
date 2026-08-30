@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 拉取 A 股复权 K 线（buffett Step 3 / 回测）。
+ * 拉取 A 股复权 K 线（rightside Step 2 / 回测）。
  *
  * 分工（勿混用）：
- *   - 前复权 forward / fqt=1 → 今日布林、对照盘面（默认）
+ *   - 前复权 forward / fqt=1 → 四阶段判定、对照盘面（默认）
  *   - 后复权 backward / fqt=2 → 回测、近 N 年收益校准
  *
  * 优先级：
@@ -19,12 +19,64 @@
 import fs from "node:fs";
 import {
   browserFetchJson,
+  httpGetJson,
   marketFromCode,
   parseArgs,
   parseJsonText,
   runOpencli,
   secid,
 } from "./opencli_json.js";
+
+/** 与 fetch_market_context.js 一致：主域限流时换 push2delay，再退浏览器。 */
+const KLINE_HOSTS = ["push2his.eastmoney.com", "push2delay.eastmoney.com"];
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function klinePayloadEmpty(payload) {
+  if (!payload || typeof payload !== "object") return true;
+  if (payload.rc != null && Number(payload.rc) !== 0) return true;
+  return !(payload.data?.klines || []).length;
+}
+
+/** HTTP 双域 + 退避 + 浏览器；东财 rc≠0（如 102）或 klines 空视为失败。 */
+async function fetchKlinePayload(sid, { klt, limit, session, fqt }) {
+  const path =
+    "/api/qt/stock/kline/get" +
+    `?secid=${sid}&fields1=f1,f2,f3,f4,f5,f6` +
+    "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" +
+    `&klt=${klt}&fqt=${fqt}&end=20500101&lmt=${limit}`;
+  const errors = [];
+  for (let round = 0; round < 2; round++) {
+    if (round) sleep(3000);
+    for (const host of KLINE_HOSTS) {
+      try {
+        const payload = await httpGetJson(`https://${host}${path}`, { retries: 1 });
+        if (klinePayloadEmpty(payload)) {
+          const rc = payload?.rc;
+          errors.push(`${host}: rc=${rc ?? "?"} klines=0`);
+          continue;
+        }
+        return { payload, source: `${host} (http)` };
+      } catch (exc) {
+        errors.push(`${host}: ${String(exc.message || exc).slice(0, 100)}`);
+      }
+    }
+  }
+  try {
+    const payload = browserFetchJson(session, `https://${KLINE_HOSTS[0]}${path}`, { sleepS: 1.0 });
+    if (!klinePayloadEmpty(payload)) {
+      return { payload, source: `${KLINE_HOSTS[0]} (browser)` };
+    }
+    errors.push(`browser: rc=${payload?.rc ?? "?"} klines=0`);
+  } catch (exc) {
+    errors.push(`browser: ${String(exc.message || exc).slice(0, 100)}`);
+  }
+  throw new Error(
+    `K线接口不可用（多为 IP 限流，请稍后 --resume 续跑）: ${errors.slice(-4).join(" | ")}`,
+  );
+}
 
 const PERIOD_MAP = {
   day: ["101", "day", 520],
@@ -133,26 +185,23 @@ export function fetchAdapter(code, period, limit, adjustName) {
   return barsFromAdapter(parseJsonText(proc.stdout || ""));
 }
 
-export function fetchBrowser(code, market, { klt, limit, session, fqt }) {
+export async function fetchPush2his(code, market, { klt, limit, session, fqt }) {
   const sid = secid(code, market);
-  const url =
-    "https://push2his.eastmoney.com/api/qt/stock/kline/get" +
-    `?secid=${sid}&fields1=f1,f2,f3,f4,f5,f6` +
-    "&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61" +
-    `&klt=${klt}&fqt=${fqt}&end=20500101&lmt=${limit}`;
-  const payload = browserFetchJson(session, url, { sleepS: 0.8 });
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new Error("push2his 返回非对象");
-  }
+  const { payload, source } = await fetchKlinePayload(sid, { klt, limit, session, fqt });
   const bars = barsFromPush2his(payload);
-  if (!bars.length) throw new Error("push2his klines 为空");
-  return bars;
+  if (!bars.length) throw new Error(`${source} klines 解析后为空`);
+  return { bars, source };
 }
 
-function main() {
+/** 同步包装，供 fetch_kline_pool 子进程调用。 */
+export function fetchBrowser(code, market, { klt, limit, session, fqt }) {
+  return fetchPush2his(code, market, { klt, limit, session, fqt }).then((r) => r.bars);
+}
+
+async function main() {
   const args = parseArgs(process.argv.slice(2), {
     positional: ["code"],
-    defaults: { period: "day", session: "buffett-kline", adjust: "forward" },
+    defaults: { period: "day", session: "rightside-kline", adjust: "forward" },
     booleans: ["browser-only", "browserOnly"],
   });
   if (!args.code) {
@@ -194,13 +243,14 @@ function main() {
 
   if (!bars.length) {
     try {
-      bars = fetchBrowser(code, market, {
+      const pushed = await fetchPush2his(code, market, {
         klt,
         limit,
         session: args.session,
         fqt: adj.fqt,
       });
-      source = `eastmoney push2his fqt=${adj.fqt} (browser)`;
+      bars = pushed.bars;
+      source = `eastmoney push2his fqt=${adj.fqt} (${pushed.source})`;
     } catch (exc) {
       console.error(
         JSON.stringify({ error: String(exc.message || exc), adapter_error: errAdapter }),
@@ -229,5 +279,5 @@ function main() {
 
 import { pathToFileURL } from "node:url";
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exit(main());
+  main().then((code) => process.exit(code ?? 0));
 }

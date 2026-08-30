@@ -1,29 +1,29 @@
 #!/usr/bin/env node
 /**
- * Step0：东财条件选股点选 + 出池（buffett 固化入口）。
+ * Step0：东财条件选股点选 + 出池（rightside 固化入口）。
  *
  * 唯一出池路径：点「去选股」后扫 Result 页 el-table（固定列 + 滚动列按行对齐）。
  *
  * 用法:
- *   node run_step0_xuangu.js -o ~/Desktop/temp/buffett_xuangu_result.json
- *   node run_step0_xuangu.js --session buffett-xg-demo --pool-json ~/Desktop/temp/buffett_pool.json
- *   node run_step0_xuangu.js --bond-json ~/Desktop/temp/buffett_bond.json
- *   node run_step0_xuangu.js --bond 1.70
+ *   node run_step0_xuangu.js -o ~/Desktop/temp/rightside_xuangu_result.json
+ *   node run_step0_xuangu.js --session rightside-xg-demo --pool-json ~/Desktop/temp/rightside_pool.json
+ *   node run_step0_xuangu.js --min-yi 1000
  *
- * 股息下限 = 中国10Y国债 × 2（无 --bond / --bond-json 时先抓 Investing）。
+ * 唯一筛选条件：总市值 > MKT_MIN_YI 亿。右侧交易不用股息/估值预筛，买卖全交给六条件。
  */
 
 import fs from "node:fs";
 import {
-  buffettTmp,
+  tmpPath,
   marketFromCode,
   parseArgs,
   parseJsonText,
   parseYiNumber,
-  readJsonFile,
   runOpencli,
 } from "./opencli_json.js";
-import { fetchBondYield, step0DivFloor } from "./fetch_bond_yield.js";
+
+/** 市值门槛（亿元）。千亿以上，保证流动性与可交易性。 */
+const MKT_MIN_YI = 1000;
 
 function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -120,31 +120,6 @@ function chips(session) {
   return parseJsonText(raw);
 }
 
-function hasDividendChip(chipList, loStr) {
-  const want = Number(loStr);
-  return (chipList || []).some((x) => {
-    const s = String(x).replace(/\s/g, "");
-    const m = s.match(/最新股息率([\d.]+)%-100%/);
-    if (!m || !Number.isFinite(want)) return false;
-    return Math.abs(Number(m[1]) - want) < 0.051;
-  });
-}
-
-function resolveBond(args) {
-  const bondFile = args.bondJson || args["bond-json"];
-  if (bondFile) {
-    const data = readJsonFile(bondFile);
-    if (data?.yield_pct == null) throw new Error("bond JSON 缺少 yield_pct");
-    return data;
-  }
-  if (args.bond != null && args.bond !== "") {
-    const y = Number(args.bond);
-    if (!Number.isFinite(y) || y <= 0) throw new Error(`无效 --bond: ${args.bond}`);
-    return { yield_pct: y, source: "cli --bond", fetched_at: new Date().toISOString() };
-  }
-  return fetchBondYield({ session: args.bondSession || args["bond-session"] || "buffett-bond" });
-}
-
 function dismissPopover(session) {
   const proc = oc(session, ["keys", "Escape"]);
   if (proc.returncode !== 0) {
@@ -185,30 +160,48 @@ function waitVisibleMainItem(session, text, { timeoutMs = 15000 } = {}) {
   throw new Error(`等待可见条件项超时: ${text}`);
 }
 
-function setMarketCap(session) {
+/**
+ * 市值门槛。优先点页面预设项 `>{N}亿`；东财预设档位有限（常见 50/100/500/1000），
+ * 无对应预设时回退到自定义区间 [N, 空]，两条路径都以 chip 落地为验收。
+ */
+function setMarketCap(session, minYi = MKT_MIN_YI) {
+  const want = `>${minYi}亿`;
   const ref = waitVisibleMainItem(session, "总市值");
   clickRef(session, ref);
   sleep(500);
   const opts = findRef(session, { css: ".pickerPopoverContainer .listItem" });
-  const labels = opts.map((e) => String(e.text || ""));
-  const want = ">1000亿";
-  if (!labels.some((t) => t === want || t.includes("1000亿"))) {
-    throw new Error(`市值选项无 ${want}，可见: ${JSON.stringify(labels.slice(0, 20))}`);
-  }
-  clickRef(session, pickRef(opts, (e) => e.text === want || String(e.text || "").includes("1000亿")));
-  sleep(300);
-  // 部分版本点选项即落 chip，确定按钮可能已不在；有则点，无则靠 chip 验收
-  const btns = findRefSoft(session, {
-    css: ".pickerPopoverContainer .el-button--primary",
-  });
-  if (btns.length) {
+  const preset = opts.find(
+    (e) => String(e.text || "") === want || String(e.text || "").includes(`${minYi}亿`),
+  );
+  if (preset) {
+    clickRef(session, Number(preset.ref));
+    sleep(300);
+    // 部分版本点选项即落 chip，确定按钮可能已不在；有则点，无则靠 chip 验收
+    const btns = findRefSoft(session, {
+      css: ".pickerPopoverContainer .el-button--primary",
+    });
+    if (btns.length) {
+      clickRef(session, Number(btns[0].ref));
+      sleep(350);
+    }
+  } else {
+    const inputs = findRef(session, { css: ".pickerPopoverContainer .el-input__inner" });
+    if (inputs.length < 1) {
+      throw new Error(
+        `市值无 ${want} 预设、也无自定义输入框，可见: ${JSON.stringify(opts.map((e) => e.text).slice(0, 20))}`,
+      );
+    }
+    fillVerified(session, inputs[0].ref, String(minYi));
+    const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
+    if (!btns.length) throw new Error("市值弹层找不到确定按钮");
     clickRef(session, Number(btns[0].ref));
-    sleep(350);
+    sleep(450);
   }
   const chipList = chips(session);
-  if (!chipList.some((x) => String(x).includes("总市值>1000亿") || String(x).includes("1000亿"))) {
-    throw new Error(`市值 chip 未落地 want=>1000亿: ${JSON.stringify(chipList)}`);
+  if (!chipList.some((x) => String(x).includes(`${minYi}亿`))) {
+    throw new Error(`市值 chip 未落地 want=${want}: ${JSON.stringify(chipList)}`);
   }
+  return chipList;
 }
 
 function clickFundamentalsTab(session) {
@@ -228,51 +221,6 @@ function clickFundamentalsTab(session) {
   }
   sleep(400);
   waitVisibleMainItem(session, "总市值");
-}
-
-/**
- * 自定义股息区间 [国债×2, 100]。
- * 历史事故：只 fill 不验值、立刻点确定 → chip 不出现或上限被默认成 5。
- */
-function setDividend(session, loStr, { attempts = 3 } = {}) {
-  let lastErr = null;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      dismissPopover(session);
-      const ref = waitVisibleMainItem(session, "最新股息率");
-      clickRef(session, ref);
-      sleep(500);
-      const inputs = findRef(session, { css: ".pickerPopoverContainer .el-input__inner" });
-      if (inputs.length < 2) {
-        throw new Error(`股息率自定义输入框不足 2 个（got ${inputs.length}）`);
-      }
-      const lo = fillVerified(session, inputs[0].ref, loStr);
-      sleep(150);
-      const hi = fillVerified(session, inputs[1].ref, "100");
-      // 点确定前再读一次，防止第二次 fill 冲掉第一次
-      const lo2 = getValue(session, inputs[0].ref);
-      const hi2 = getValue(session, inputs[1].ref);
-      if ((lo2 !== loStr && Number(lo2) !== Number(loStr)) || hi2 !== "100") {
-        throw new Error(`确定前复检失败 lo=${lo2}/${lo} hi=${hi2}/${hi} want=${loStr}`);
-      }
-      const btns = findRef(session, { css: ".pickerPopoverContainer .el-button--primary" });
-      if (!btns.length) throw new Error("股息弹层找不到确定按钮");
-      clickRef(session, Number(btns[0].ref));
-      sleep(450);
-      const chipList = chips(session);
-      if (hasDividendChip(chipList, loStr)) {
-        if (attempt > 1) console.log(`setDividend ok on attempt=${attempt}`);
-        return chipList;
-      }
-      throw new Error(`股息 chip 未落地 want=${loStr}: ${JSON.stringify(chipList)}`);
-    } catch (exc) {
-      lastErr = exc;
-      console.log(`setDividend attempt ${attempt}/${attempts} failed: ${exc.message || exc}`);
-      dismissPopover(session);
-      sleep(400);
-    }
-  }
-  throw new Error(`setDividend 重试 ${attempts} 次仍失败: ${lastErr?.message || lastErr}`);
 }
 
 function currentUrl(session) {
@@ -303,15 +251,6 @@ function waitResultPage(session, { timeoutMs = 25000 } = {}) {
     sleep(800);
   }
   throw new Error("等待 Result 页/表格超时");
-}
-
-function parsePct(raw) {
-  if (raw == null || raw === "") return null;
-  const m = String(raw)
-    .replace(/,/g, "")
-    .trim()
-    .match(/^([+-]?\d+(?:\.\d+)?)\s*%?$/);
-  return m ? Number(m[1]) : null;
 }
 
 /** 从 Result 页 el-table 扫出结构化池（固定列 + 滚动列按行对齐） */
@@ -372,15 +311,13 @@ function scrapeResultDom(session) {
     );
   }
 
-  // 表头定位股息/市值/PE/PB（滚动区）；代码/名称在固定列固定下标
+  // 表头定位市值/PE/PB（滚动区）；代码/名称在固定列固定下标
   const normH = (h) => String(h || "").replace(/\s+/g, "");
   const findCol = (pred) => headerBody.findIndex((h) => pred(normH(h)));
-  let divIdx = findCol((h) => h.includes("最新股息率") || h.includes("股息率"));
   let mktIdx = findCol((h) => h.includes("总市值") && !h.includes("流通"));
   let peIdx = findCol((h) => h.includes("市盈率"));
   let pbIdx = findCol((h) => h.includes("市净率"));
-  // 兜底：实跑滚动列常见布局 6=股息 7=总市值 ... 15=PE 16=PB
-  if (divIdx < 0) divIdx = 6;
+  // 兜底：实跑滚动列常见布局 7=总市值 ... 15=PE 16=PB
   if (mktIdx < 0) mktIdx = 7;
   if (peIdx < 0) peIdx = 15;
   if (pbIdx < 0) pbIdx = 16;
@@ -393,7 +330,6 @@ function scrapeResultDom(session) {
     if (!/^\d{6}$/.test(code)) continue;
     let name = String(f[3] || "").replace(/ /g, "").replace(/^(XD|XR|DR)/, "");
     const price = parseYiNumber(f[4]);
-    const div = parsePct(b[divIdx]);
     const mktRaw = b[mktIdx];
     const mkt = parseYiNumber(mktRaw); // 元
     let market;
@@ -406,7 +342,6 @@ function scrapeResultDom(session) {
       code,
       name,
       market,
-      div,
       mkt,
       mkt_yi: mkt != null ? mkt / 1e8 : null,
       price,
@@ -424,16 +359,9 @@ function scrapeResultDom(session) {
     totalHint,
     headerFixed: data.headerFixed,
     headerBody: data.headerBody,
-    colIndex: { div: divIdx, mkt: mktIdx, pe: peIdx, pb: pbIdx },
+    colIndex: { mkt: mktIdx, pe: peIdx, pb: pbIdx },
     pool,
   };
-}
-
-function pagerDisabled(entry) {
-  const cls = `${entry.class || ""} ${entry.attrs?.class || ""}`;
-  if (/disabled|is-disabled/i.test(cls)) return true;
-  const aria = entry.attrs?.["aria-disabled"] ?? entry.attrs?.disabled;
-  return aria === true || aria === "true";
 }
 
 function firstTableCode(session) {
@@ -450,7 +378,7 @@ function firstTableCode(session) {
   return (raw.trim().split(/\r?\n/).pop() || "").trim();
 }
 
-function waitTableCodeChange(session, prevCode, timeoutMs = 15000) {
+function waitTableCodeChange(session, prevCode, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     sleep(400);
@@ -460,17 +388,23 @@ function waitTableCodeChange(session, prevCode, timeoutMs = 15000) {
   throw new Error(`翻页后表格未变化，首页代码仍为 ${prevCode || "空"}`);
 }
 
+/**
+ * 翻页只走 CSS `button.btn-next`。
+ * 历史事故：改分页大小会重渲染分页器，`find --text 下一页` 取到的 ref 随即失效，
+ * 点击静默но-op → 表格不变 → 误报「翻页后表格未变化」。CSS 在点击时现场解析，不会 stale。
+ */
+function nextPageDisabled(session) {
+  const raw = evalJs(
+    session,
+    '(function(){var b=document.querySelector("button.btn-next");if(!b)return "missing";return b.disabled?"disabled":"ok";})()',
+  );
+  return (raw.trim().split(/\r?\n/).pop() || "").trim();
+}
+
 function clickNextResultPage(session) {
-  const entries = findRef(session, { text: "下一页" });
-  let next = null;
-  for (const e of entries) {
-    if (String(e.text || "").replace(/\s/g, "") === "下一页") {
-      next = e;
-      break;
-    }
-  }
-  if (!next || pagerDisabled(next)) return false;
-  clickRef(session, Number(next.ref));
+  const state = nextPageDisabled(session);
+  if (state !== "ok") return false;
+  clickCss(session, "button.btn-next");
   return true;
 }
 
@@ -527,9 +461,12 @@ function scrapeAllResultPages(session) {
   if (totalHint != null && pool.length === totalHint) {
     return { ...scraped, pool, n: pool.length, pages: 1 };
   }
+  let size = pool.length;
   if (totalHint != null && totalHint > pool.length) {
-    setResultPageSize(session, totalHint > 100 ? 200 : 100);
-    waitRowCountAtLeast(session, totalHint);
+    // 分页上限 200：只能等「本页应有的行数」，超出部分靠下面翻页累积。
+    size = totalHint > 100 ? 200 : 100;
+    setResultPageSize(session, size);
+    waitRowCountAtLeast(session, Math.min(totalHint, size), 30_000);
     scraped = scrapeResultDom(session);
     pool = scraped.pool;
   }
@@ -538,6 +475,15 @@ function scrapeAllResultPages(session) {
     const prevCode = pool[0]?.code;
     if (!clickNextResultPage(session)) break;
     waitTableCodeChange(session, prevCode);
+    // 整页时等本页渲染满，否则立刻扫会拿到半页，最后条数对不上而误报
+    const remaining = totalHint - pool.length;
+    if (remaining >= size) {
+      try {
+        waitRowCountAtLeast(session, size, 30_000);
+      } catch {
+        /* 渲染慢则按当前行数扫，下轮循环补 */
+      }
+    }
     const more = scrapeResultDom(session);
     const before = pool.length;
     pool = mergePool(pool, more.pool);
@@ -594,28 +540,23 @@ function main() {
   ].join("");
   const args = parseArgs(process.argv.slice(2), {
     defaults: {
-      session: `buffett-xg-${hhmmss}`,
-      output: buffettTmp("buffett_xuangu_result.json"),
-      poolJson: buffettTmp("buffett_pool.json"),
-      bondOut: buffettTmp("buffett_bond.json"),
+      session: `rightside-xg-${hhmmss}`,
+      output: tmpPath("rightside_xuangu_result.json"),
+      poolJson: tmpPath("rightside_pool.json"),
+      minYi: String(MKT_MIN_YI),
     },
   });
   const session = args.session;
   const outPath = args.output;
   const poolJson = args.poolJson || args["pool-json"];
-  const bondOut = args.bondOut || args["bond-out"];
+  const minYi = Number(args.minYi || args["min-yi"] || MKT_MIN_YI);
+  if (!Number.isFinite(minYi) || minYi <= 0) {
+    console.error(`error: 无效 --min-yi: ${args.minYi}`);
+    return 1;
+  }
 
   try {
-    const bond = resolveBond(args);
-    const floor = step0DivFloor(bond.yield_pct);
-    if (bondOut) {
-      fs.writeFileSync(bondOut, `${JSON.stringify(bond, null, 2)}\n`, "utf8");
-    }
-    console.log(
-      `bond=${floor.bond}% floor=${floor.loStr}% (国债×2) source=${bond.source || "—"}`,
-    );
-
-    console.log(`session=${session}`);
+    console.log(`session=${session} min_yi=${minYi}`);
     const proc = oc(session, ["open", "https://xuangu.eastmoney.com/"]);
     if (proc.returncode !== 0) {
       throw new Error((proc.stderr || proc.stdout).slice(0, 400));
@@ -624,30 +565,18 @@ function main() {
     if (w.returncode !== 0) throw new Error("wait 条件选股 失败");
 
     clickFundamentalsTab(session);
-    setMarketCap(session);
+    setMarketCap(session, minYi);
     const c1 = chips(session);
-    console.log(`chips_after_mkt=${JSON.stringify(c1)}`);
-    if (!c1.some((x) => x.includes("总市值>1000亿") || x.includes("1000亿"))) {
-      throw new Error(`市值 chip 不正确 want=>1000亿: ${JSON.stringify(c1)}`);
-    }
-
-    const c2 = setDividend(session, floor.loStr);
-    console.log(`chips_final=${JSON.stringify(c2)}`);
-    if (!hasDividendChip(c2, floor.loStr)) {
-      throw new Error(`股息 chip 不正确 want=${floor.loStr}: ${JSON.stringify(c2)}`);
+    console.log(`chips_final=${JSON.stringify(c1)}`);
+    if (!c1.some((x) => x.includes(`${minYi}亿`))) {
+      throw new Error(`市值 chip 不正确 want=>${minYi}亿: ${JSON.stringify(c1)}`);
     }
 
     console.log("mode=xuangu-result-dom");
-    const bondMeta = {
-      bond_yield_pct: floor.bond,
-      div_floor_pct: floor.lo,
-      div_floor_exact: floor.exact,
-      bond_source: bond.source || null,
-      bond_fetched_at: bond.fetched_at || null,
-    };
-    const meta = captureResultDom(session, outPath, bondMeta);
+    const filterMeta = { mkt_min_yi: minYi };
+    const meta = captureResultDom(session, outPath, filterMeta);
 
-    writePool(poolJson, meta.pool, bondMeta);
+    writePool(poolJson, meta.pool, filterMeta);
     console.log(JSON.stringify({
       source: meta.source,
       n: meta.n,
@@ -655,8 +584,7 @@ function main() {
       chips: meta.chips,
       path: meta.path,
       pool: poolJson,
-      bond: bondOut,
-      ...bondMeta,
+      ...filterMeta,
     }));
     console.log(`N=${meta.n} SOURCE=${meta.source} POOL=${poolJson} FILE=${outPath}`);
     console.log(`ALL=${meta.pool.map((p) => p.code).join(",")}`);

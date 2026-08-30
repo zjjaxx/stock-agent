@@ -19,7 +19,7 @@ export const SearchAgentProvider: Provider = {
       model: llmProvider,
       name: SEARCH_AGENT_TOKEN,
       description:
-        '股票查询与分析子 Agent：按任务加载 /src/skills/（smart-search/opencli 检索选股与事实、buffett 价值分析），查证事实并完成分析；必要时 BochaWebSearch 兜底。',
+        '股票查询与分析子 Agent：按任务加载 /src/skills/（smart-search/opencli 检索选股与事实、rightside 右侧交易技术位分析），查证事实并完成分析；必要时 BochaWebSearch 兜底。',
       systemPrompt: searchAgentPrompt,
       tools: [timeTool],
       skills: ['/src/skills/'],

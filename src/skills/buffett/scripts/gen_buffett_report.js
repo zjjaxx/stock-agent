@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 /**
- * 桌面终报骨架：读 Step2 事实卡 JSON，写目录 ~/Desktop/buffett-YYYYMMDDHHmm/
+ * 桌面终报骨架：读 Step1 硬筛通过池，写目录 ~/Desktop/buffett-YYYYMMDDHHmm/
  *
  * 分册（避免单文件过长）：
  *   00-总览.md     — 今日建仓建议 + 分册目录
- *   1x–7x-*.md    — 按生意形态 fin_kind 分册；册内仍按东财三级行业分组
+ *   1x–7x-*.md    — 按生意形态 fin_kind 分册；册内按东财 f100 分组
  *   99-硬筛剔除.md
  *
  * 「巴菲特交叉验证」「主要风险」留空位，由 Agent 按 Buffett 视角逐票现写。
  *
  * 用法:
  *   node gen_buffett_report.js
- *   node gen_buffett_report.js --facts ~/Desktop/temp/buffett_step2_facts.json --step1 ~/Desktop/temp/buffett_step1.json
+ *   node gen_buffett_report.js --step1 ~/Desktop/temp/buffett_step1.json
  *   node gen_buffett_report.js --out-dir ~/Desktop/buffett-自定义
  */
 
@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { industryDisplayKey } from "./industry_map.js";
+import { finKindFromF100, industryDisplayKey } from "./industry_map.js";
 import { buffettTmp, buffettTmpDir, parseArgs, readJsonFile } from "./opencli_json.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -41,7 +41,7 @@ function fmtYi(x) {
 }
 
 function cardKind(card) {
-  return card?.fin_kind || card?.special?.kind || "corp";
+  return card?.fin_kind || "corp";
 }
 
 function taxDiv(div) {
@@ -167,7 +167,7 @@ function zoneLabel(b) {
   return "中轨附近";
 }
 
-/** 周下 + 月中～月下（边界一律股价 5%）。日线不进建仓门槛。不做带宽/PE/PB 闸门。 */
+/** 周下 + 月中～月下（边界一律股价 5%）。日线不进建仓门槛。 */
 function bollSignal(bD, bW, bM) {
   if (!bW?.ok || !bM?.ok) {
     return { signal: "K线不足，观望", batchOk: false, weekResonance: false };
@@ -219,19 +219,13 @@ function techBlock(boll) {
   return { text, sig };
 }
 
-function hasHardRed(card) {
-  return Array.isArray(card.red_hints) && card.red_hints.length > 0;
-}
-
 function industryGroupKey(card) {
   return industryDisplayKey(card);
 }
 
-/** 写入今日建仓建议：布林到位 + 无 hard 红线。 */
-function canSuggestToday(card, sig) {
-  if (!sig?.batchOk) return false;
-  if (hasHardRed(card)) return false;
-  return true;
+/** 写入今日建仓建议：仅布林到位。 */
+function canSuggestToday(_card, sig) {
+  return Boolean(sig?.batchOk);
 }
 
 function rankTodayBuys(a, b) {
@@ -243,42 +237,32 @@ function rankTodayBuys(a, b) {
 }
 
 function actionBlock(card, sig, { inToday } = {}) {
-  if (inToday) {
-    return "建仓建议（布林到位：周下+月中～下）";
-  }
-  if (sig.batchOk && hasHardRed(card)) {
-    return `观望：布林到位，hard红线不入今日建议：${card.red_hints.join("；")}。`;
-  }
-  if (hasHardRed(card)) return `观望：${sig.signal}。hard红线：${card.red_hints.join("；")}。`;
+  if (inToday) return "建仓建议（布林到位：周下+月中～下）";
   return `观望：${sig.signal}`;
 }
 
-function redReview(card) {
-  const hard = card.red_hints || [];
-  const soft = card.soft_hints || [];
-  if (!hard.length && !soft.length) return "无 hard/soft 提示；复核通过。";
-  return `hard=${hard.join("；") || "无"}；soft=${soft.join("；") || "无"}。Agent 复核 hard 提示后定终评。`;
+function cardsFromStep1(step1) {
+  return (step1.pass || []).map((row) => ({
+    ...row,
+    fin_kind: finKindFromF100(row.f100),
+  }));
 }
 
-function factsSummary(c) {
-  const lines = [];
-  lines.push(
-    `- 派息 ${fmt(c.pay_ratio)}%（${c.pay_ratio_source || "无来源"}${c.pay_ratio_year ? `，${c.pay_ratio_year}` : ""}）｜ROE3 ${fmt(c.roe3)}%｜负债率 ${fmt(c.debt)}%`,
-  );
-  if ((c.fcf_cov || []).length) {
-    const recent = c.fcf_cov
-      .slice(0, 3)
-      .map((r) => `${r.year || "?"}覆盖${fmt(r.cover)}`)
-      .join(" / ");
-    lines.push(`- FCF/分红覆盖（近）：${recent}`);
+function loadBond(bondPath, step1) {
+  if (bondPath && fs.existsSync(bondPath)) {
+    const raw = readJsonFile(bondPath);
+    if (raw?.yield_pct != null) return raw;
+    if (raw?.bond?.yield_pct != null) return raw.bond;
   }
-  if (c.special?.kind && c.special.kind !== "corp") {
-    lines.push(`- 专项 kind=${c.special.kind}（见事实卡；银/保/证勿套工业 FCF）`);
+  const y = step1?.bond_yield_pct;
+  if (y != null) {
+    return {
+      yield_pct: y,
+      source: "step1",
+      fetched_at: step1.generated_at || "—",
+    };
   }
-  if ((c.data_gaps || []).length) {
-    lines.push(`- 缺口：${c.data_gaps.join("；")}`);
-  }
-  return lines.join("\n");
+  return { yield_pct: null, source: "—", fetched_at: "—" };
 }
 
 /** 分册顺序：金融 → 公用/基建 → 周期 → 制造/消费 → 科技；未列 kind 归「其他」。 */
@@ -331,15 +315,10 @@ function renderStockCard(c, { bollCache, todayCodes, fiveByCode }) {
   L.push(`#### ${c.code} ${c.name}`);
   L.push("");
   L.push(
-    `**基础信息**：市值 ${fmtYi(c.mkt_yi)} 亿；东财 f100=${c.f100}${c.industry_f10?.l3 ? `；三级=${c.industry_f10.l3}` : ""}；现价 ${c.price}；${taxDiv(c.div)}；股息/国债比 ${fmt(c.bond_ratio, 2)}；连续现金分红 ${c.div_streak} 年。`,
+    `**基础信息**：市值 ${fmtYi(c.mkt_yi)} 亿；东财 f100=${c.f100 || "—"}；现价 ${c.price}；${taxDiv(c.div)}；股息/国债比 ${fmt(c.bond_ratio, 2)}；连续现金分红 ${c.div_streak ?? "—"} 年。`,
   );
   L.push("");
-  L.push("**关键财务摘要**：");
-  L.push(factsSummary(c));
-  L.push("");
   L.push("**经营壁垒备注**：（可选；仅核实事实）");
-  L.push("");
-  L.push(`**红线**：${redReview(c)}`);
   L.push("");
   const boll = bollCache[c.code] || { D: null, W: null, M: null };
   const { text: techText, sig } = techBlock(boll);
@@ -374,7 +353,7 @@ function renderStockCard(c, { bollCache, todayCodes, fiveByCode }) {
   return L;
 }
 
-function runFiveDimForBuys(todayBuys, { factsPath, bondPath, outJson, outMd }) {
+function runFiveDimForBuys(todayBuys, { bondPath, outJson, outMd }) {
   if (!todayBuys.length) {
     return { results: [], byCode: new Map() };
   }
@@ -386,7 +365,6 @@ function runFiveDimForBuys(todayBuys, { factsPath, bondPath, outJson, outMd }) {
       name: c.name,
       market: c.market,
       div: c.div,
-      pay_hist: c.pay_hist || [],
     })),
   };
   fs.writeFileSync(buysPath, `${JSON.stringify(buysPayload, null, 2)}\n`, "utf8");
@@ -397,8 +375,6 @@ function runFiveDimForBuys(todayBuys, { factsPath, bondPath, outJson, outMd }) {
         path.join(HERE, "calc_buy_five_dim.js"),
         "--buys",
         buysPath,
-        "--facts",
-        factsPath,
         "--bond",
         bondPath,
         "-o",
@@ -425,17 +401,17 @@ function runFiveDimForBuys(todayBuys, { factsPath, bondPath, outJson, outMd }) {
 function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv, {
     defaults: {
-      facts: buffettTmp("buffett_step2_facts.json"),
       step1: buffettTmp("buffett_step1.json"),
+      bond: buffettTmp("buffett_bond.json"),
       xuangu: buffettTmp("buffett_xuangu_result.json"),
       tmp: buffettTmpDir(),
     },
   });
 
-  const data = readJsonFile(args.facts);
   const step1 = readJsonFile(args.step1);
   const xuangu = fs.existsSync(args.xuangu) ? readJsonFile(args.xuangu) : { source: "—" };
-  const cards = [...(data.cards || [])];
+  const bond = loadBond(args.bond, step1);
+  const cards = cardsFromStep1(step1);
 
   const bollCache = {};
   const sigCache = {};
@@ -463,17 +439,13 @@ function main(argv = process.argv.slice(2)) {
 
   const fiveJson = path.join(outDir, "buffett_five_dim.json");
   const fiveMd = path.join(outDir, "02-五维估值.md");
-  let bondPath = buffettTmp("buffett_bond.json");
-  if (!fs.existsSync(bondPath) && data.bond?.yield_pct != null) {
-    fs.writeFileSync(bondPath, `${JSON.stringify(data.bond, null, 2)}\n`, "utf8");
-  }
-  if (!fs.existsSync(bondPath)) {
-    bondPath = path.join(outDir, "_bond_from_facts.json");
-    fs.writeFileSync(bondPath, `${JSON.stringify(data.bond || {}, null, 2)}\n`, "utf8");
+  let bondPath = args.bond;
+  if (!fs.existsSync(bondPath) && bond.yield_pct != null) {
+    bondPath = path.join(outDir, "_bond_from_step1.json");
+    fs.writeFileSync(bondPath, `${JSON.stringify(bond, null, 2)}\n`, "utf8");
   }
   console.log(`Step3 five-dim for K=${K} …`);
   const five = runFiveDimForBuys(todayBuys, {
-    factsPath: args.facts,
     bondPath,
     outJson: fiveJson,
     outMd: fiveMd,
@@ -534,31 +506,29 @@ function main(argv = process.argv.slice(2)) {
     for (const c of vol.list) codeToVolFile.set(c.code, vol.file);
   }
 
-  // —— 00 总览 ——
+  const bondY = bond.yield_pct;
   const overview = [];
   overview.push("# A股高股息长线复利 · 今日总览");
   overview.push("");
   overview.push(`生成时点：${now.toISOString()}｜研究框架，不构成投资建议。`);
   overview.push(
-    `国债10Y：${data.bond.yield_pct}%（${data.bond.source}，${data.bond.fetched_at}）｜股息门槛：≥国债×2 = ${(data.bond.yield_pct * 2).toFixed(2)}%`,
+    `国债10Y：${bondY != null ? `${bondY}%` : "—"}（${bond.source || "—"}，${bond.fetched_at || "—"}）｜股息门槛：≥国债×2 = ${bondY != null ? (bondY * 2).toFixed(2) : "—"}%`,
   );
   overview.push(
     `候选池：N=${step1.n_pool}（${xuangu.source || "xuangu-result-dom"}）→ 硬筛通过 M=${step1.n_pass} → 今日建仓建议 K=${K}`,
   );
   overview.push("");
   overview.push(
-    "本套报告按**生意形态模板**拆成多册（册内仍按东财三级行业分组）。每票只写一份完整分析，不另开短评/详报两套。不做质地评分排名。",
+    "本套报告按**生意形态模板**拆成多册（册内按东财 f100 分组）。每票只写一份完整分析。不做质地评分、不做 F10 事实卡/红线机械筛。",
   );
   overview.push("");
   overview.push(`## 1. 今日建仓建议一览（K=${K}）`);
   overview.push("");
-  overview.push(
-    "条件：「布林到位 + 无 hard 红线」——允许 K=0。",
-  );
+  overview.push("条件：布林到位（周下+月中～下）——允许 K=0。");
   overview.push("");
   if (K === 0) {
     overview.push(
-      "**今日无建仓建议**：无票同时满足「周线下轨附近 + 月线中～下轨（边界均≤股价5%）+ 无 hard 红线」。",
+      "**今日无建仓建议**：无票同时满足「周线下轨附近 + 月线中～下轨（边界均≤股价5%）」。",
     );
     overview.push("");
   }
@@ -577,7 +547,7 @@ function main(argv = process.argv.slice(2)) {
     }
   }
   overview.push("");
-  overview.push("五维明细见 [02-五维估值.md](02-五维估值.md)。建仓条件仍是布林+无 hard；五维只作解释/排序参考。");
+  overview.push("五维明细见 [02-五维估值.md](02-五维估值.md)。建仓条件仍是布林；五维只作解释参考。");
   overview.push("");
   overview.push("## 2. 分册目录");
   overview.push("");
@@ -589,20 +559,17 @@ function main(argv = process.argv.slice(2)) {
   overview.push(`| [02-五维估值.md](02-五维估值.md) | 建仓票五维分位 | ${K} | — |`);
   overview.push(`| [99-硬筛剔除.md](99-硬筛剔除.md) | 硬门槛未过 | ${step1.n_reject ?? (step1.reject || []).length} | — |`);
   overview.push("");
-  overview.push("阅读建议：先看本总览建仓表 → 五维估值 → 点开对应分册核对事实/技术位/巴菲特交叉验证。");
+  overview.push("阅读建议：先看本总览建仓表 → 五维估值 → 点开对应分册核对技术位/巴菲特交叉验证。");
   overview.push("");
   fs.writeFileSync(path.join(outDir, "00-总览.md"), overview.join("\n"), "utf8");
 
-  // —— 分册 ——
   for (const vol of volumeRows) {
     const L = [];
     L.push(`# ${vol.title}（${vol.n} 只｜模板 \`${vol.kind}\`）`);
     L.push("");
     L.push(`← [${"00-总览.md"}](00-总览.md)｜生成时点 ${now.toISOString()}`);
     L.push("");
-    L.push(
-      "按东财 F10 三级行业分组（无 l3 则回退 f100）；组内按股息/国债比降序。",
-    );
+    L.push("按东财 f100 分组；组内按股息/国债比降序。");
     L.push("");
     L.push("| 行业 | 只数 |");
     L.push("|---|---|");
@@ -620,7 +587,6 @@ function main(argv = process.argv.slice(2)) {
     fs.writeFileSync(path.join(outDir, vol.file), L.join("\n"), "utf8");
   }
 
-  // —— 99 剔除 ——
   const rej = [];
   rej.push("# 硬门槛剔除简表");
   rej.push("");

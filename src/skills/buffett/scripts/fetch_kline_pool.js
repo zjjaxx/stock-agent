@@ -9,7 +9,6 @@
  *
  * 用法:
  *   node fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json
- *   node fetch_kline_pool.js --facts ~/Desktop/temp/buffett_step2_facts.json --resume
  *   node fetch_kline_pool.js --hfq-only   # 只补后复权
  *   node fetch_kline_pool.js --qfq-only   # 只补前复权+布林
  *

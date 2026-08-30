@@ -1,31 +1,31 @@
 ---
 name: buffett
 description: |
-  A股高股息长线复利策略执行框架（硬筛+红线+布林到位→今日建仓建议）。
+  A股高股息长线复利策略执行框架（硬筛+布林到位→今日建仓建议）。
   当用户需要：
   "筛选高股息股票"、"评估某只红利股是否值得长期持有"、
   "用基本面+布林带判断红利股买卖点"、
   "用巴菲特视角评价高股息策略"时使用。
   即使用户提到"攒股收息"、"红利策略"、"股息率选股"、
-  "保守型长线"、"布林带+股息"等关键词，也应触发本技能。
+    "保守型长线"、"布林带+股息"等关键词，也应触发本技能。
   数据优先通过 opencli-browser 抓取；
   杜绝凭记忆编造财务数字。
 ---
 
 # A股高股息长线复利策略执行框架
 
-保守型高股息分析：股息可持续 + 事实卡/红线 + 技术位 → **今日建仓建议**（布林到位且无 hard 红线）。不做组合规划，不做质地评分排名。
+保守型高股息分析：硬筛出池 + 技术位 → **今日建仓建议**（布林到位）。不做组合规划，不做质地评分排名，**不做 F10 事实卡 / 红线机械筛**。
 
-**原则**：**股息提供厚垫，红线一票否决今日建议，布林决定何时动手**。分红靠 FCF 覆盖（银行/保险/证券用专用表），不是账面利润。今日名单 = 硬筛池 M 内**布林到位、无 hard 红线** 的票；允许 K=0。数字必须可追溯。不做仓位预算。
+**原则**：**股息提供厚垫，布林决定何时动手**。今日名单 = 硬筛池 M 内**布林到位** 的票；允许 K=0。数字必须可追溯。不做仓位预算。
 
 每步 **Run** 一行即可执行。flags / URL / 字段 / 完整串联 → [`references/eastmoney-data.md`](references/eastmoney-data.md)。执行前 `opencli doctor`。
 
 **缓存目录**：一律写 [`~/Desktop/temp/`](file:///Users/zhengjiajun/Desktop/temp)（`buffettTmp()` 自动定位并创建），禁止默认写系统 `/tmp` 或仓库 `tmp/`。
 
-**分工**：脚本抓数、硬筛、摊事实卡、红线机械提示。`gen_buffett_report.js` 只输出事实/技术/操作骨架；Agent 复核红线、**逐票撰写巴菲特交叉验证与主要风险**、完善桌面终报。禁止把脚本红线提示当终评而不复核。
+**分工**：脚本抓数、硬筛、布林、出报告骨架。`gen_buffett_report.js` 只输出池内基础信息/技术/操作骨架；Agent **逐票撰写巴菲特交叉验证与主要风险**、完善桌面终报。
 
 ```
-Step0 原始 N → Step1（硬筛+事实卡+红线）通过 M
+Step0 原始 N → Step1（硬筛）通过 M
 → Step2：对全部 M 只拉前复权（布林）+ 后复权 K 线 → 今日建仓建议 K 只
 → Step3：仅对 K 只做五维自身分位
 → 前部+分册终报（交叉验证由 Agent 现写）
@@ -48,63 +48,34 @@ Run: `node scripts/run_step0_xuangu.js -o ~/Desktop/temp/buffett_xuangu_result.j
 失败（doctor / 打不开 xuangu / 条件无效 / 扫表条数对不上）→ 终止，不得进 Step 1。  
 交付：chip、时点、落盘路径、全量 N 只代码。未生成 `~/Desktop/temp/buffett_pool.json`（且条数=页内「共 N 只」）不得进 Step 1。池内 **全部** 进 Step 1，禁止抽样。
 
-### Step 1：硬筛 + 事实卡 + 红线（一步做完）
+### Step 1：硬筛（股息缺失剔除 + 行业/连续分红挂卡）
 
-对 N 只：股息缺失剔除 → 拉行业/连续分红挂卡 → 通过池拉 F10 事实卡 → 打红线机械提示。踩 **hard** 红线则终评回避，且**不得写入今日建仓建议**。卡上关键字段缺口须标明，不准猜。
+对 N 只：股息缺失剔除 → 拉行业 `f100` / 连续分红年限挂卡 → 写出通过池 M。**不再拉 F10、不打包事实卡、不打红线提示。**
 
-Run（同一逻辑步内串行；脚本仍分文件，不必合并成单脚本）：
+Run：
 ```bash
 node scripts/fetch_dividend_streak.js --pool ~/Desktop/temp/buffett_pool.json -o ~/Desktop/temp/buffett_streak.json
 node scripts/fetch_industry.js --pool ~/Desktop/temp/buffett_pool.json -o ~/Desktop/temp/buffett_industry.json
 node scripts/step1_hard_filter.js --pool ~/Desktop/temp/buffett_pool.json --streak ~/Desktop/temp/buffett_streak.json \
   --industry ~/Desktop/temp/buffett_industry.json --bond-json ~/Desktop/temp/buffett_bond.json \
   -o ~/Desktop/temp/buffett_step1.json --pass-json ~/Desktop/temp/buffett_pass_pool.json
-node scripts/fetch_f10_bundle.js --pool ~/Desktop/temp/buffett_pass_pool.json -o ~/Desktop/temp/buffett_f10.json --resume
-node scripts/pack_step2_facts.js \
-  --step1 ~/Desktop/temp/buffett_step1.json --f10 ~/Desktop/temp/buffett_f10.json --bond ~/Desktop/temp/buffett_bond.json \
-  -o ~/Desktop/temp/buffett_step2_facts.md --json ~/Desktop/temp/buffett_step2_facts.json
 ```
 
-**硬筛**：股息率缺失则剔除。连续现金分红年限仍抓取写入事实卡（展示用），**不作硬筛剔除**。市值不再筛。行业由东财 `f100` 映射（无 `--industry` 时硬筛脚本可现拉），写入事实卡作画像参考。禁止用代码名单或简称归类。硬约束不过即剔除，不得用经营壁垒等主观理由放行。PB 是软约束。
+**硬筛**：股息率缺失则剔除。连续现金分红年限仍抓取写入通过池（展示用），**不作硬筛剔除**。市值不再筛。行业由东财 `f100` 映射（无 `--industry` 时硬筛脚本可现拉），供报告分册。禁止用代码名单或简称归类。硬约束不过即剔除。
 
-**事实卡**：概况、派息、DPS 历史、ROE/负债/FCF/银行保险专项、quote；非金融近 5 年 ROIC/毛利率；`red_lines.js` 机械提示。
-
-**脚本不做**：红线终评复核、巴菲特交叉验证与主要风险（须 Agent 现写）。本步不看 K 线、新闻。不要为凑数字去抓研报/一致预期。分红承诺卡上没有则不准编。
-
-未生成 `~/Desktop/temp/buffett_step1.json`、`buffett_pass_pool.json`、`buffett_step2_facts.json` 不得进 Step 2、不得写推荐。
+未生成 `~/Desktop/temp/buffett_step1.json`、`buffett_pass_pool.json` 不得进 Step 2、不得写推荐。
 
 #### 行业键与生意形态
 
-行业比较键优先东财 F10 三级行业 `l3`（`BOARD_NAME_3LEVEL`），无 `l3` 时回退 ulist `f100`。禁止用股票简称或代码名单。
+行业比较键用东财 ulist `f100`。禁止用股票简称或代码名单。
 
-`fin_kind` **只认东财行业字段**（优先 F10 `l3`，过细落到 corp 时回退 `f100`），映射到：银行 / 保险 / 证券|多元金融 / utility / brand_consumer / resource_cycle / infra_construction / appliance / equip_mfg / tech_hardware / corp 兜底。用于报告分册。禁止用不良、拨备、核充、NIM、偿付字段反推种类。
-
-银行现金流量表口径不同。**银行/保险/证券禁止用 FCF / 净现比**；银行/保险也不用负债率。保险用偿付，不要套银行不良率；证券用风险覆盖/资本杠杆等监管指标。
-
-**FCF** = 经营现金流 − 资本开支；覆盖率 = FCF / 年度分红。非金融单年覆盖 **>5 或 <-2** → 先复核单位。
-
-#### 红线（一票否决）
-
-`red_hints`（hard）须复核后才能定终评回避；`soft_hints` 不自动一票否决（银行/保险/证券跳过现金流两条）：
-
-1. 派息率 >100%——分支：
-   - 净利同比腰斩 → hard「盈利骤降但分红维持」
-   - 近两年 FCF 覆盖均 ≥1 → soft「特别分红倾向」（不强制否决）
-   - 任一年 cover<1 → hard「寅吃卯粮：FCF盖不住」
-   - 无 cover → soft「须人工区分」（不自动否决）
-2. 经营现金流连续 2 年 < 净利润（优先净现比 <1，否则 OCF<净利）——银行/保险/证券不适用；银行改用：不良率连续 2 年上升 且 拨备跌破 150%
-3. FCF 连续 2 年 < 年度分红（cover<1）——银行/保险/证券不适用
-4. 净利润亏损仍分红
-
-**FCF 分红分母口径**：优先 `COMPRE.TOTAL_DIVIDEND`；若与「净利×派息」隐含值之比 <1/3，视 COMPRE 残缺改用隐含，并按年独立决策（禁止一年 COMPRE、一年隐含混用放大量级哨兵）。
-
-今日建仓建议**排除** hard 红线。`soft_hints` 不挡今日建议。
+`fin_kind` **只认东财 `f100`**，映射到：银行 / 保险 / 证券|多元金融 / utility / brand_consumer / resource_cycle / infra_construction / appliance / equip_mfg / tech_hardware / corp 兜底。用于报告分册。
 
 ### Step 2：买卖点（仅布林）
 
-**今日建仓建议** = 布林到位、无 hard 红线。K 线与布林对**全部 M 只**都跑。
+**今日建仓建议** = 布林到位。K 线与布林对**全部 M 只**都跑。
 
-**禁止**：用股息率/PB 历史分位、PE/PB 绝对值门槛、周线带宽门槛、`allow_batch` 给建仓建议；禁止把「估值分位」写成信号来源（相关脚本已删）。未到可尝试批量建仓条件 → **观望**，总览允许 K=0。
+**禁止**：用股息率/PB 历史分位、PE/PB 绝对值门槛、周线带宽门槛、`allow_batch`、红线机械筛给建仓建议；禁止把「估值分位」写成信号来源。未到可尝试批量建仓条件 → **观望**，总览允许 K=0。
 
 #### 2.1 前复权 K 线（今日技术强制）+ 后复权（收益观察）
 
@@ -126,7 +97,7 @@ node scripts/fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json --
 
 | 区域 | 定义 | 动作 |
 |---|---|---|
-| 可尝试批量建仓 | **必须**周线下轨附近 + 月线中轨～下轨 | 技术到位且无 hard 才写**建仓建议** |
+| 可尝试批量建仓 | **必须**周线下轨附近 + 月线中轨～下轨 | 技术到位才写**建仓建议** |
 | 未到买点 | 周线未到下轨附近；或月线未落在中～下 | **观望** |
 
 **边界一律相对股价 5%**：
@@ -143,16 +114,16 @@ node scripts/fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json --
 
 行情 PE/PB **不进入**技术位、也不拦今日建仓。
 
-标注 **「信号来源：布林带」**。未到可尝试批量建仓条件 → 在个股操作栏写**观望**，**不写建仓建议**。布林到位但 hard 红线 → 同样写观望，原因写在操作栏。
+标注 **「信号来源：布林带」**。未到可尝试批量建仓条件 → 在个股操作栏写**观望**，**不写建仓建议**。
 
 ### Step 3：建仓票五维估值（仅 K 只）
 
-只对 Step2 写出的**今日建仓建议**票跑；K=0 则跳过。不改变建仓资格（布林+无 hard 仍是唯一门槛）；本步用于解释估值水位。
+只对 Step2 写出的**今日建仓建议**票跑；K=0 则跳过。不改变建仓资格（布林仍是唯一门槛）；本步用于解释估值水位。
 
 Run（也可由 `gen_buffett_report.js` 自动调用）：
 ```bash
 node scripts/calc_buy_five_dim.js --buys ~/Desktop/temp/buffett_today_buys.json \
-  --facts ~/Desktop/temp/buffett_step2_facts.json --bond ~/Desktop/temp/buffett_bond.json \
+  --bond ~/Desktop/temp/buffett_bond.json \
   -o ~/Desktop/temp/buffett_five_dim.json --md ~/Desktop/temp/buffett_five_dim.md
 ```
 
@@ -168,7 +139,7 @@ node scripts/calc_buy_five_dim.js --buys ~/Desktop/temp/buffett_today_buys.json 
 
 - **总分** = 可用维等权均值（至少 3 维；缺维不凑假数）
 - 国债用当前 `bond.yield_pct` 贯穿窗口（无历史国债曲线时的约定）
-- 股息率：优先日频字段；否则年报 DPS/收盘前向填充，最新点用事实卡 TTM 股息
+- 股息率：优先日频字段；缺则 F10 除权 DPS 滚 365 天 TTM/收盘；再回退年报 DPS 前向填充
 
 交付：`02-五维估值.md` + JSON；总览建仓表附五维总分。
 
@@ -178,15 +149,15 @@ node scripts/calc_buy_five_dim.js --buys ~/Desktop/temp/buffett_today_buys.json 
 
 | 布林 | 写入 | 禁止 |
 |---|---|---|
-| 技术到位且无 hard | **建仓建议**，标明布林；并跑 Step3 五维 | hard 红线仍写建仓建议 |
-| 未到位，或 hard | **观望** | 用五维总分反推建仓；把观望写成卖出 |
+| 技术到位 | **建仓建议**，标明布林；并跑 Step3 五维 | 用五维总分反推建仓 |
+| 未到位 | **观望** | 把观望写成卖出 |
 
-**是否写新建仓建议** = 布林到位、无 hard（**不看**五维总分）。必须等周线下轨附近 + 月线中～下轨（边界均≤5%）；未到则观望。允许 K=0。不写仓位比例、不写资金预算。
+**是否写新建仓建议** = 布林到位（**不看**五维总分）。必须等周线下轨附近 + 月线中～下轨（边界均≤5%）；未到则观望。允许 K=0。不写仓位比例、不写资金预算。
 
-- **建仓建议**（布林到位：周下+月中～下 + 无 hard 红线）：本次操作写「建仓建议（布林）」
-- **观望**：其余所有情况（未到位、hard 红线、K 线不足）
+- **建仓建议**（布林到位：周下+月中～下）：本次操作写「建仓建议（布林）」
+- **观望**：其余所有情况（未到位、K 线不足）
 
-无合格票则 K=0。未入今日名单者原因写在个股操作栏（布林结论 / hard 红线）。
+无合格票则 K=0。未入今日名单者原因写在个股操作栏（布林结论）。
 
 **目标价**（操作采用技术档；前复权轨与现价同量级，可对照）：
 1. 近端 = 周中轨；乐观 = 周/月上轨中更保守者
@@ -204,7 +175,7 @@ node scripts/calc_buy_five_dim.js --buys ~/Desktop/temp/buffett_today_buys.json 
 |---|---|
 | `00-总览.md` | 今日建仓建议一览（含五维摘要）+ 分册目录 |
 | `02-五维估值.md` | 建仓票五维自身分位 |
-| `10-银行.md` … `70-科技硬件.md` 等 | 按生意形态 `fin_kind` 分册；册内按东财三级行业分组 |
+| `10-银行.md` … `70-科技硬件.md` 等 | 按生意形态 `fin_kind` 分册；册内按东财 f100 分组 |
 | `99-硬筛剔除.md` | 硬门槛未过简表 |
 
 可先跑 `gen_buffett_report.js` 生成骨架，再由 Agent 补全。入口读 `00-总览.md`。对话末尾给目录绝对路径。
@@ -213,7 +184,7 @@ node scripts/calc_buy_five_dim.js --buys ~/Desktop/temp/buffett_today_buys.json 
 
 **禁止**再拆「短评 / 详报」两套；每只通过硬筛的票只写**一份**完整分析（写在对应分册内即可）。
 
-### 1. 今日建仓建议一览（在 `00-总览.md`；布林到位且无 hard；允许 K=0）
+### 1. 今日建仓建议一览（在 `00-总览.md`；布林到位；允许 K=0）
 
 N → M → K
 
@@ -221,27 +192,23 @@ N → M → K
 
 | 代码 | 简称 | 现价 | TTM股息率 | 五维总分 | 分册 |
 |---|---|---|---|---:|---|
-| … | … | … | …% | … | … | … | …% | 链接到分册 |
+| … | … | … | …% | … | … |
 
 ### 2. 个股全评（分册内全部 M 只）
 
-按生意形态拆文件；每个分册内：按东财三级行业分类（无 l3 则 f100）；行业内按股息/国债比或代码排序。每票同一模板，勿把推荐票写短、其余票另开附录。
+按生意形态拆文件；每个分册内：按东财 f100 分组；行业内按股息/国债比或代码排序。每票同一模板，勿把推荐票写短、其余票另开附录。
 
 #### [代码] [简称]
 
-**基础信息**：市值、东财 `f100`、F10 三级行业、现价、TTM/税后股息；数据来源（F10/quote/国债时点）。
-
-**关键财务摘要**（只列事实卡数字，禁止编造）：派息、ROE、负债/FCF 或银保证专项、持久性数据摘要等。
+**基础信息**：市值、东财 `f100`、现价、TTM/税后股息、连续分红年限；数据来源（选股池/国债时点）。
 
 **经营壁垒备注（可选）**：仅记录已核实的牌照、资源、网络、转换成本、成本或品牌事实。
-
-**红线**：hard/soft 复核结论。是否写入今日建仓建议（布林 + 无 hard 红线）。
 
 **技术位**（全部 M 只）：日/周/月布林位置（带宽可展示、不拦建仓）；信号来源（仅布林带）；K 线来源（前复权）。无落盘写「K 线未落盘」。
 
 **预期目标价**（有布林时）：技术近端/乐观；**操作采用技术档**。无布林则写「—」。
 
-**操作**：布林到位且无 hard →「建仓建议（布林）」；否则写观望原因（未到位 / 红线）。观望须写清技术原因。
+**操作**：布林到位 →「建仓建议（布林）」；否则写观望原因（未到位）。观望须写清技术原因。
 
 **五维估值**（仅建仓建议票）：总分与各维自身分位；详见 `02-五维估值.md`。不得用五维总分反推是否建仓。
 
@@ -261,15 +228,15 @@ N → M → K
 
 - 跳过 Step 0 / 截断名单 / 失败改走 yjfp 或凭记忆凑池
 - 未跑本步 Run 或未落盘就进下一步；不要在本文件扩写完整串联，flags 以 eastmoney-data.md 为准
-- 用代码名单或简称（「电力」「酒」）归行业；必须用东财 F10 `l3`（无则 `f100`）
+- 用代码名单或简称（「电力」「酒」）归行业；必须用东财 `f100`
 - DOM 扫表不校验「共 N 只」、或不按固定列+滚动列对齐
-- 凭记忆填数字；派息不过哨兵；FCF 极端值不核单位
+- 重新引入 F10 事实卡打包 / `red_hints` 机械筛当买卖门槛
 - 用估值分位/`allow_batch`/股息隐含价/PE·PB 绝对值门槛给建仓建议或「分批」；省略前复权
 - 只给部分票拉 K 线、§2 对其余票写「未拉 K 线」
-- 未到可尝试批量建仓条件仍凑今日建仓建议；hard 红线仍写入今日建议
+- 未到可尝试批量建仓条件仍凑今日建仓建议
 - 交叉验证套模板；脚本 `gen_buffett_report.js` 不得机械生成交叉验证/风险（须 Agent 现写）
 - 用五维总分反推建仓或否决布林买点；重新引入质地评分、同业第1、候补、PE/PB 偏贵闸门或周线带宽门槛
 
 ## 边界
 
-研究框架，不构成投资建议。财务须最新报告期；全失败时声明数据缺口，禁止用训练数据顶替。
+研究框架，不构成投资建议。全失败时声明数据缺口，禁止用训练数据顶替。

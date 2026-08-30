@@ -10,15 +10,14 @@
 | `fetch_bond_yield.js` | Investing 中国 10Y 国债收益率 |
 | `fetch_dividend_streak.js` | Step1：`DIVIDEND_MAIN` 连续年报分红年限（挂卡展示，不作硬筛） |
 | `fetch_industry.js` | Step1：push2 ulist `f100`（curl 优先，失败则 browser） |
-| `step1_hard_filter.js` | Step1 内：股息缺失初筛（连续分红只挂卡不剔除；市值只在 Step0）；`--pass-json` 写出通过池 |
-| `fetch_f10_bundle.js` | Step1 内：ORG/DUPONT/GCASHFLOW/COMPRE/PROFILE/MAINFINADATA + quote；含 DPS/派息历史与 5 年持久性数据 |
-| `pack_step2_facts.js` | Step1 内：合并硬筛通过池+F10 为事实卡，写入红线机械提示（不做质地评分） |
-| `red_lines.js` | Step1 红线机械提示 hard/soft（`--self-test`）；特别分红走 soft |
+| `step1_hard_filter.js` | Step1：股息缺失初筛（连续分红只挂卡不剔除；市值只在 Step0）；`--pass-json` 写出通过池 |
 | `fetch_kline_hfq.js` | 单票 K 线：`--adjust forward|backward`（默认前复权） |
 | `fetch_kline_pool.js` | Step2：池内日/周/月双落盘 `*_qfq`（+布林）与 `*_hfq`（收益观察） |
 | `calc_bollinger.js` | 前复权收盘算布林（唯一买卖路径；输入应为 qfq） |
 | `calc_buy_five_dim.js` | Step3：建仓票五维自身分位（PE/PB/ERP/DRP/现价，2Y窗） |
-| `gen_buffett_report.js` | 桌面终报骨架：目录分册；今日建议=布林+无 hard；自动跑五维；技术位只读前复权 |
+| `gen_buffett_report.js` | 桌面终报骨架：读 Step1 通过池；今日建议=布林到位；自动跑五维；技术位只读前复权 |
+
+已删除：`fetch_f10_bundle.js` / `pack_step2_facts.js` / `red_lines.js`（不再做 F10 事实卡与红线机械筛）。
 
 ```bash
 S=scripts
@@ -29,11 +28,7 @@ node $S/fetch_industry.js --pool ~/Desktop/temp/buffett_pool.json -o ~/Desktop/t
 node $S/step1_hard_filter.js --pool ~/Desktop/temp/buffett_pool.json --streak ~/Desktop/temp/buffett_streak.json \
   --industry ~/Desktop/temp/buffett_industry.json --bond-json ~/Desktop/temp/buffett_bond.json \
   -o ~/Desktop/temp/buffett_step1.json --pass-json ~/Desktop/temp/buffett_pass_pool.json
-node $S/fetch_f10_bundle.js --pool ~/Desktop/temp/buffett_pass_pool.json -o ~/Desktop/temp/buffett_f10.json --resume
-node $S/pack_step2_facts.js \
-  --step1 ~/Desktop/temp/buffett_step1.json --f10 ~/Desktop/temp/buffett_f10.json --bond ~/Desktop/temp/buffett_bond.json \
-  -o ~/Desktop/temp/buffett_step2_facts.md --json ~/Desktop/temp/buffett_step2_facts.json
-# 复核 hard 红线；K 线对全部 M 只；今日名单=布林到位+无 hard；建仓票跑五维
+# K 线对全部 M 只；今日名单=布林到位；建仓票跑五维
 node $S/fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json --resume
 node $S/gen_buffett_report.js
 ```
@@ -50,35 +45,20 @@ DOM 口径：固定列（序号/代码/名称/最新价）与滚动列（股息/
 
 ## 个股字段
 
-执行前 `opencli doctor`。示例 `600900` 须按标的替换 code / 交易所前缀 / 简称。有 adapter 先用 adapter；F10 财务报表走 browser network。
+执行前 `opencli doctor`。示例 `600900` 须按标的替换 code / 交易所前缀 / 简称。有 adapter 先用 adapter。
 
 ### 现价 / 市值 / PE / PB
+
+Step0 选股 Result 表已带最新价/市值/股息；五维估值另走 `RPT_VALUEANALYSIS_DET`。调试可用：
 
 ```bash
 opencli eastmoney quote 600900 -f json
 # price, marketCap, peDynamic, priceBook, name, market
 ```
 
-### F10（browser + reportName）
+### 连续分红（挂卡展示）
 
-```
-BASE=https://emweb.securities.eastmoney.com/PC_HSF10/pages/index.html?type=web&code=SH600900
-```
-
-| hash | reportName / type | 用途 |
-|---|---|---|
-| `#/fhrz` | `RPT_F10_DIVIDEND_MAIN` / `COMPRE` / `DIVIDENDNEW_PROFILE` | 连续分红、年度分红总额、派息摘要 |
-| `#/gsgk` | `RPT_F10_ORG_BASICINFO` | `REAL_CONTROLER` / `CONTROL_HOLDER` / `ORG_FORM`（概念标签≠性质终审） |
-| `#/cwfx` | `MAINFINADATA` / `DUPONT` / `GCASHFLOW` | ROE、净利、净现比、现金流、资本开支、银行/保险专项 |
-
-认 key：用 URL 里 `reportName=` / `type=` 匹配，取 size 最大的再 `--detail`。禁止写死 `#N`。`cache_expired` 时换 session 或加 `--ttl`。
-
-```
-FCF = NETCASH_OPERATE − CONSTRUCT_LONG_ASSET
-覆盖率 = FCF / 该年 TOTAL_DIVIDEND
-```
-
-`DIVIDEND_PAY_RATIO` 是小数比（0.55=55%，2.235=223.5%），须 ×100；>1 时勿当「百分之几」原样写入。
+`fetch_dividend_streak.js` 读 `RPT_F10_DIVIDEND_MAIN` 年报现金分红年数；只展示，不作硬筛剔除。
 
 ### 布林与复权分工
 
@@ -96,13 +76,12 @@ node ../scripts/fetch_kline_pool.js --pool ~/Desktop/temp/buffett_pass_pool.json
 
 报告「K 线数据来源」写前复权；若附录对齐近 N 年收益，注明后复权。禁止混用两套收盘算同一条布林。
 
-### 估值分位与质地评分 / PE·PB 闸门（已删除；勿用于买卖）
+### 估值分位与质地评分 / F10 事实卡 / 红线（已删除；勿用于买卖）
 
-估值分位次路径、`fetch_valuation_history.js`、`score_numeric.js`、同业第1/候补名单、以及 **PE/PB 绝对值偏贵闸门**（原 `VAL_ABS_BY_KIND`）均已删除：
+`fetch_f10_bundle.js`、`pack_step2_facts.js`、`red_lines.js`、`score_numeric.js`、估值分位次路径、同业第1/候补、PE/PB 绝对值闸门均已删除：
 
-- 禁止用 `allow_batch` / 股息分位≥80 / PB≤20 / PE·PB 模板门槛给「分批」或建仓建议
-- 禁止把「估值分位」写成信号来源；禁止重新引入质地评分排名或估值闸门
-- Step2 只跑布林；可尝试批量建仓 = **周线下轨附近 + 月线中轨～下轨**；边界一律相对股价 ≤5%（周：略高下轨≤5%；月：落在 `[下轨×0.95, 中轨×1.05]`）。技术位不写 PE/PB；**不做周线带宽门槛**（带宽可展示）。日线不进门槛。今日建议另须无 hard 红线；未到 → **观望**。须标明信号来源是布林带
+- 禁止用 `allow_batch` / 股息分位 / PE·PB 模板门槛 / 红线机械提示给建仓建议
+- Step2 只跑布林；可尝试批量建仓 = **周线下轨附近 + 月线中轨～下轨**；边界一律相对股价 ≤5%。日线不进门槛。未到 → **观望**。须标明信号来源是布林带
 
 ### 10Y 国债
 
@@ -119,48 +98,20 @@ Step 0 用 `最新股息率 ≥ 国债×2`；Step 1 硬筛只把 `bond_ratio` �
 | 评估字段 | 来源 |
 |---|---|
 | Step 0 候选 | Result 页 el-table（`xuangu-result-dom`） |
-| 行业 f100 | `fetch_industry.js` 的东财 `f100`（画像）；分组优先 F10 `BOARD_NAME_3LEVEL`；禁止代码名单或简称猜测 |
-| 现价/市值/PE/PB | `eastmoney quote` |
-| TTM 股息率 | 初筛：Result「最新股息率」；个股：PROFILE.`DIVIDEND_NEWRATIO` |
-| 派息率 | 优先 PROFILE.`DIVIDEND_PAY_RATIO`（×100）；哨兵触发则同年 COMPRE÷净利 |
-| ROE(3 年) | `MAINFINADATA.ROEJQ` 或 `DUPONT.ROE`（年报） |
-| 经营现金流 / 净现比 | `GCASHFLOW.NETCASH_OPERATE` / `MAINFINADATA.NCO_NETPROFIT`（年报至少 5 年，`pageSize≥24`） |
-| 资本开支 | `GCASHFLOW.CONSTRUCT_LONG_ASSET` |
-| 年度分红 | `DIVIDEND_COMPRE.TOTAL_DIVIDEND` |
-| 负债率 | `DUPONT.DEBT_ASSET_RATIO`（银行/保险不用） |
-| 银行专项 | `NONPERLOAN` / `BLDKBBL` / `HXYJBCZL` / `NET_INTEREST_MARGIN` / `NON_PERFORMING_LOAN` / `GROSSLOANS` / `OVERDUE_LOANS`；非息占比来自 `GINCOME` 利息净收入与营业总收入 |
-| 保险专项 | `SOLVENCY_AR` / `NET_ROI` / `TOTAL_ROI` / `NBV_LIFE` / `NBV_RATE`（年报 TOTAL_ROI 空时中报回退；无 IRR/EV/P/EV） |
-| 证券专项 | `RISK_COVERAGE` / `CAPITAL_LEVERAGE_RATIO` / `ZYGDSYLZQJZB`；利润表手续费/利息/投资占比与同比（无两融市占、自营收益率、资管 AUM） |
-| 公用事业专项 | `INTEREST_COVERAGE_RATIO`（空则 `GINCOME` 营业利润/利息支出） / `YSZKZZTS` / `TOTALOPERATEREVETZ` / `PARENTNETPROFITTZ`；经营现金流/净利润；DPS 同比 |
-| 周期资源专项 | 毛利率历史；`INTEREST_COVERAGE_RATIO`（空则利润表回退） / `INTEREST_DEBT_RATIO`；Capex/OCF |
-| 品牌消费专项 | `CONTRACT_LIAB_YOY`（GBALANCE）；`YSZKZZTS`；OCF/净利；毛利年变动 |
-| 白电专项 | 同品牌消费字段 + `CHZZTS` 存货天；合同负债同比 |
-| 装备制造专项 | OCF/净利；利息保障；有息负债率；应收天；合同负债同比 |
-| 科技硬件专项 | ROIC/毛利历史；OCF/净利；应收/存货天；合同负债 |
-| 基建建筑专项 | OCF/营收；`YSZKZZTS`；`INTEREST_COVERAGE_RATIO`；`INTEREST_DEBT_RATIO`；`CONTRACT_ASSET`/`CONTRACT_ASSET_YOY`；`NOTE_ACCOUNTS_RECE_YOY` |
-| 持久性（非金融） | 近 5 年 `MAINFINADATA.ROIC` / `XSMLL`（事实卡展示） |
-| 分红纪律证据 | `DIVIDEND_MAIN` 已实施方案按报告年度汇总「10派 X 元」得 DPS |
-| 持久性（银行/保险/证券） | 近 5 年 ROE 历史等。`fin_kind` 优先 l3、过细回退 f100 |
-| 连续分红 | `DIVIDEND_MAIN` 按年去重 |
+| 行业 f100 | `fetch_industry.js` 的东财 `f100`（分册）；禁止代码名单或简称猜测 |
+| 现价/市值/TTM股息 | Step0 Result 表 |
+| 连续分红 | `DIVIDEND_MAIN` 按年去重（挂卡） |
 | 布林 | `*_qfq` 前复权 + `calc_bollinger.js`（唯一买卖路径） |
 | 收益观察 | `*_hfq` 后复权月线 |
+| 五维估值 | `RPT_VALUEANALYSIS_DET`（PE/PB/价）；股息优先表内字段，缺则 `RPT_F10_DIVIDEND_MAIN` 除权 DPS 滚 365 天 TTM/收盘 |
 | 10Y 国债 | Investing（默认） |
-
-## 派息率哨兵
-
-1. 优先 PROFILE：小数比 ×100；禁止把 2.235 写成 2.24%
-2. 无 PROFILE，或 PROFILE 踩哨兵且 COMPRE 自算更干净 → 同年 `TOTAL_DIVIDEND ÷ PARENT_NETPROFIT`
-3. 哨兵：派息 <10% 且 TTM 股息≥3.5% 且 PB≤5；或 股息率 ≈ 派息×ROE/PB 数量级差 ≥3 倍
-4. |PROFILE − COMPRE| >15pct 记入 reasons，仍以 PROFILE 为准
-5. **FCF 覆盖分母**（`resolveFcfDivAmounts`）：按年优先 COMPRE 绝对分红；若 COMPRE/隐含(净利×派息) <1/3 → 改用隐含并标注 `compre-incomplete`；禁止只改最近一年、其它年仍用残缺 COMPRE
-6. 仍失败标「派息率数据缺口」；>100% 走 `red_lines` 特别分红分支（soft/hard）
 
 ## 抓取原则
 
-1. Prefer adapter / network JSON；F10 认 `reportName`/`type`，不认写死 `#N`
+1. Prefer adapter / network JSON
 2. eval 只读；禁止用 eval 改 DOM/导航（hash `open` 除外）
 3. Step 0 只走 Result 页对齐扫表。禁止 yjfp / 行业表 / 记忆 / search-code
 4. 关键 network 包同一回合立刻 `--detail` 落盘
-5. 财务数字写明报告期；个股失败可换入口或向用户索要（仅 Step 0 成功后）；禁止编造
+5. 禁止编造财务数字；本 skill 不做 F10 事实卡打包
 6. 今日布林必须前复权；回测/校准用后复权；禁止混用同一条指标
 7. 国债默认 Investing；东财国债废页跳过

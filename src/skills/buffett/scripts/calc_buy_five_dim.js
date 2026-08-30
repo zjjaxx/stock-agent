@@ -8,13 +8,12 @@
  *   DRP = 股息率 − 国债10Y（小数） —— 越高越好 → score = 分位
  *   总分 = 可用维等权均值
  *
- * 股息率历史：优先 VALUEANALYSIS 日频字段；否则用年报 DPS/收盘前向填充。
- * 国债：整段用当前 bond.yield_pct（无历史国债曲线时的约定）。
+ * - 股息率：优先估值表日频字段；否则用 F10 DIVIDEND_MAIN 除权日现金 DPS
+ *   滚动近 365 天 TTM / 收盘；再回退年报 DPS 前向填充；最新点可用池内 TTM 覆盖。
  *
  * 用法:
  *   node calc_buy_five_dim.js --codes 600900,601288
  *   node calc_buy_five_dim.js --buys ~/Desktop/temp/buffett_today_buys.json \
- *     --facts ~/Desktop/temp/buffett_step2_facts.json \
  *     --bond ~/Desktop/temp/buffett_bond.json \
  *     -o ~/Desktop/temp/buffett_five_dim.json
  */
@@ -24,8 +23,11 @@ import {
   browserFetchJson,
   buffettTmp,
   datacenterRows,
+  datacenterUrl,
+  marketFromCode,
   parseArgs,
   readJsonFile,
+  secucode,
 } from "./opencli_json.js";
 
 const WINDOW = 504; // ~2Y trading days
@@ -55,13 +57,13 @@ function percentileOf(values, current) {
   return pctRank(xs, current);
 }
 
-function valueAnalysisUrl(code) {
+function valueAnalysisUrl(code, pageNumber = 1, pageSize = 500) {
   const filt = encodeURIComponent(`(SECURITY_CODE="${code}")`);
   return (
     "https://datacenter-web.eastmoney.com/api/data/v1/get" +
     "?reportName=RPT_VALUEANALYSIS_DET" +
     "&columns=ALL" +
-    `&filter=${filt}&pageNumber=1&pageSize=1400` +
+    `&filter=${filt}&pageNumber=${pageNumber}&pageSize=${pageSize}` +
     "&sortColumns=TRADE_DATE&sortTypes=-1&source=WEB&client=WEB"
   );
 }
@@ -71,27 +73,33 @@ function toDateStr(raw) {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
 
-/** 拉取日频估值（新→旧），再翻成旧→新。 */
+/** 拉取日频估值（翻成旧→新）。分页拉满（平安约自 2018，共 ~2100 根）。 */
 export function fetchValueDaily(code, session = "buffett-value") {
-  const payload = browserFetchJson(session, valueAnalysisUrl(code), { sleepS: 0.8 });
-  const rows = datacenterRows(payload);
-  const daily = [];
-  for (const r of rows) {
-    const date = toDateStr(r.TRADE_DATE);
-    const close = fnum(r.CLOSE_PRICE);
-    if (!date || !(close > 0)) continue;
-    const pe = fnum(r.PE_TTM);
-    const pb = fnum(r.PB_MRQ);
-    const dy =
-      fnum(r.DIVIDEND_RATIO) ??
-      fnum(r.DV_TTM) ??
-      fnum(r.DIVIDEND_RATE) ??
-      fnum(r.DVD_RATE) ??
-      null;
-    daily.push({ date, close, pe, pb, dy });
+  const byDate = new Map();
+  let page = 1;
+  let pages = 1;
+  while (page <= pages && page <= 20) {
+    const payload = browserFetchJson(session, valueAnalysisUrl(code, page, 500), { sleepS: 0.7 });
+    pages = Number(payload?.result?.pages) || 1;
+    const rows = datacenterRows(payload);
+    if (!rows.length) break;
+    for (const r of rows) {
+      const date = toDateStr(r.TRADE_DATE);
+      const close = fnum(r.CLOSE_PRICE);
+      if (!date || !(close > 0)) continue;
+      const pe = fnum(r.PE_TTM);
+      const pb = fnum(r.PB_MRQ);
+      const dy =
+        fnum(r.DIVIDEND_RATIO) ??
+        fnum(r.DV_TTM) ??
+        fnum(r.DIVIDEND_RATE) ??
+        fnum(r.DVD_RATE) ??
+        null;
+      byDate.set(date, { date, close, pe, pb, dy });
+    }
+    page += 1;
   }
-  daily.sort((a, b) => a.date.localeCompare(b.date));
-  return daily;
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function buildDpsFill(payHist) {
@@ -105,25 +113,118 @@ function buildDpsFill(payHist) {
   return { byYear, years };
 }
 
-function attachDivYield(daily, payHist, currentDivPct) {
+/** 从「10派 X 元」类方案文案解析每股现金分红。 */
+export function parseCashDpsFromPlan(plan) {
+  const s = String(plan || "");
+  let m = s.match(/10派\s*([\d.]+)/);
+  if (m) return Number(m[1]) / 10;
+  m = s.match(/每10股[^派]{0,12}派\s*([\d.]+)\s*元/);
+  if (m) return Number(m[1]) / 10;
+  m = s.match(/派息\s*([\d.]+)\s*元/);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+function addCalendarDays(isoDate, deltaDays) {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return dt.toISOString().slice(0, 10);
+}
+
+/**
+ * F10 分红实施表 → 除权日现金 DPS 事件（升序）。
+ * VALUEANALYSIS 常无股息列；用此另接日频 TTM 股息率。
+ */
+export function fetchDividendCashEvents(code, market, session = "buffett-value") {
+  const mkt = market || marketFromCode(code);
+  const sc = secucode(String(code).split(".")[0], mkt);
+  const url = datacenterUrl("RPT_F10_DIVIDEND_MAIN", sc, {
+    pageSize: 120,
+    sortColumns: "NOTICE_DATE",
+  });
+  const payload = browserFetchJson(session, url, { sleepS: 0.65 });
+  const rows = datacenterRows(payload);
+  const events = [];
+  for (const row of rows) {
+    if (String(row.IS_UNASSIGN) === "1") continue;
+    const plan = `${row.IMPL_PLAN_PROFILE || ""}${row.NEW_PROFILE || ""}${row.IMPL_PLAN_NEWPROFILE || ""}`;
+    const dps = parseCashDpsFromPlan(plan);
+    const date = toDateStr(row.EX_DIVIDEND_DATE || row.EQUITY_RECORD_DATE || row.PAY_CASH_DATE);
+    if (!(dps > 0) || !date) continue;
+    events.push({
+      date,
+      dps,
+      plan: plan.slice(0, 48),
+      report: String(row.REPORT_DATE || ""),
+    });
+  }
+  events.sort((a, b) => a.date.localeCompare(b.date));
+  // 同日多笔合并
+  const merged = [];
+  for (const e of events) {
+    const last = merged[merged.length - 1];
+    if (last && last.date === e.date) last.dps += e.dps;
+    else merged.push({ ...e });
+  }
+  return merged;
+}
+
+/**
+ * 日频股息率：
+ * 1) 估值表自带 dy
+ * 2) 除权日 DPS 近 365 天滚动 TTM / 收盘
+ * 3) 年报 DPS 前向填充 / 收盘
+ * 4) 可选：最新点用池内 TTM 覆盖
+ */
+export function attachDivYield(daily, payHist, currentDivPct, cashEvents = []) {
   const { byYear, years } = buildDpsFill(payHist);
   let lastDps = null;
   let yi = 0;
+  let ei = 0; // cashEvents 已发生指针（升序）
+  const active = []; // 窗口内事件 { date, dps }
+
   for (const d of daily) {
     const y = d.date.slice(0, 4);
     while (yi < years.length && years[yi] <= y) {
       lastDps = byYear[years[yi]];
       yi += 1;
     }
+
     if (d.dy != null && d.dy > 0) {
-      d.div_pct = d.dy > 1 ? d.dy : d.dy * 100; // 有的源给小数
+      d.div_pct = d.dy > 1 ? d.dy : d.dy * 100;
+      d.div_source = "valueanalysis";
       continue;
     }
-    if (lastDps != null && d.close > 0) d.div_pct = (lastDps / d.close) * 100;
-    else d.div_pct = null;
+
+    while (ei < cashEvents.length && cashEvents[ei].date <= d.date) {
+      active.push(cashEvents[ei]);
+      ei += 1;
+    }
+    const start = addCalendarDays(d.date, -365);
+    while (active.length && active[0].date <= start) active.shift();
+
+    if (active.length && d.close > 0) {
+      const ttmDps = active.reduce((s, e) => s + e.dps, 0);
+      d.div_pct = (ttmDps / d.close) * 100;
+      d.div_source = "ttm_exdiv";
+      d.ttm_dps = ttmDps;
+      continue;
+    }
+
+    if (lastDps != null && d.close > 0) {
+      d.div_pct = (lastDps / d.close) * 100;
+      d.div_source = "annual_dps_fill";
+    } else {
+      d.div_pct = null;
+      d.div_source = null;
+    }
   }
+
   if (currentDivPct != null && daily.length) {
-    daily[daily.length - 1].div_pct = currentDivPct;
+    const last = daily[daily.length - 1];
+    last.div_pct = currentDivPct;
+    last.div_source = last.div_source ? `${last.div_source}+pool_override` : "pool_override";
   }
   return daily;
 }
@@ -186,16 +287,33 @@ function scoreAt(daily, endIdx, window = WINDOW) {
   return { date: cur.date, dims, total, n_win: win.length, n_dims: usable.length };
 }
 
-export function analyzeOne({ code, name, bondPct, currentDiv, payHist, session }) {
+export function analyzeOne({ code, name, bondPct, currentDiv, payHist, session, market }) {
   const raw = fetchValueDaily(code, session);
   if (raw.length < 80) {
     return { code, name, ok: false, error: `value_series_short:${raw.length}` };
   }
-  const daily = enrichMetrics(attachDivYield(raw, payHist, currentDiv), bondPct);
+  const needCashDy = raw.filter((d) => d.dy != null && d.dy > 0).length < 20;
+  let cashEvents = [];
+  let cashErr = null;
+  if (needCashDy) {
+    try {
+      cashEvents = fetchDividendCashEvents(code, market, session);
+    } catch (exc) {
+      cashErr = String(exc.message || exc);
+    }
+  }
+  // 有 TTM 序列时不要用单点池内股息盖掉整段最新点，除非完全无股息
+  const overrideLatest =
+    currentDiv != null && cashEvents.length === 0 && raw.every((d) => d.dy == null || !(d.dy > 0));
+  const daily = enrichMetrics(
+    attachDivYield(raw, payHist, overrideLatest ? currentDiv : null, cashEvents),
+    bondPct,
+  );
   const latest = scoreAt(daily, daily.length - 1, WINDOW);
   if (!latest) {
     return { code, name, ok: false, error: "score_failed" };
   }
+  const withDiv = daily.filter((d) => d.div_pct != null).length;
   return {
     code,
     name,
@@ -205,6 +323,13 @@ export function analyzeOne({ code, name, bondPct, currentDiv, payHist, session }
     as_of: latest.date,
     five_dim: latest,
     series_n: daily.length,
+    div_meta: {
+      cash_events: cashEvents.length,
+      days_with_div: withDiv,
+      latest_div_pct: daily[daily.length - 1]?.div_pct ?? null,
+      latest_div_source: daily[daily.length - 1]?.div_source ?? null,
+      cash_error: cashErr,
+    },
   };
 }
 
@@ -266,7 +391,6 @@ function renderMd(results) {
 export function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv, {
     defaults: {
-      facts: buffettTmp("buffett_step2_facts.json"),
       bond: buffettTmp("buffett_bond.json"),
       session: "buffett-value",
       output: buffettTmp("buffett_five_dim.json"),
@@ -275,17 +399,14 @@ export function main(argv = process.argv.slice(2)) {
   });
 
   let items = parseCodes(args);
-  const facts = fs.existsSync(args.facts) ? readJsonFile(args.facts) : null;
   let bond = { yield_pct: null };
   if (fs.existsSync(args.bond)) {
     const raw = readJsonFile(args.bond);
     bond = raw.yield_pct != null ? raw : raw.bond || raw;
-  } else if (facts?.bond) {
-    bond = facts.bond;
   }
   const bondPct = fnum(bond.yield_pct);
   if (bondPct == null) {
-    console.error("需要 --bond JSON（yield_pct）或 facts.bond");
+    console.error("需要 --bond JSON（yield_pct）");
     return 1;
   }
 
@@ -298,24 +419,23 @@ export function main(argv = process.argv.slice(2)) {
     return 1;
   }
 
-  const cardBy = {};
-  for (const c of facts?.cards || []) cardBy[String(c.code)] = c;
-
   const results = [];
   for (const it of items) {
-    const card = cardBy[it.code] || {};
     console.log(`five-dim ${it.code} …`);
     try {
       const r = analyzeOne({
         code: it.code,
-        name: it.name || card.name || it.code,
+        name: it.name || it.code,
         bondPct,
-        currentDiv: fnum(it.div) ?? fnum(card.div),
-        payHist: it.pay_hist || card.pay_hist || [],
+        currentDiv: fnum(it.div),
+        payHist: it.pay_hist || [],
         session: args.session,
+        market: it.market,
       });
       results.push(r);
-      console.log(`  ok=${r.ok} total=${r.five_dim?.total ?? "—"}`);
+      console.log(
+        `  ok=${r.ok} total=${r.five_dim?.total ?? "—"} div=${r.div_meta?.latest_div_pct?.toFixed?.(2) ?? "—"}% src=${r.div_meta?.latest_div_source || "—"} n_dims=${r.five_dim?.n_dims ?? "—"}`,
+      );
     } catch (exc) {
       results.push({ code: it.code, name: it.name, ok: false, error: String(exc.message || exc) });
       console.error(`  error: ${exc.message || exc}`);

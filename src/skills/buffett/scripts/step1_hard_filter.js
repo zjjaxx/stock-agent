@@ -2,7 +2,7 @@
 /**
  * Step 1 硬门槛初筛（股息缺失）；连续分红年限只写入结果、不作剔除。
  * 市值只在 Step 0 召回（>1000亿），此处不再剔除。
- * 行业来自东财 f100（fetch_industry.js），供事实卡画像。
+ * 行业来自东财 f100（fetch_industry.js），供报告分册/分组。
  *
  * 用法:
  *   node step1_hard_filter.js \

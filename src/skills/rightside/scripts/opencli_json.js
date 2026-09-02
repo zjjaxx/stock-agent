@@ -234,9 +234,11 @@ export function marketFromCode(code) {
   const raw = String(code).trim().toUpperCase();
   if (raw.includes(".")) return raw.split(".", 2)[1];
   if (raw.length === 6 && /^\d{6}$/.test(raw)) {
-    if ("69".includes(raw[0])) return "SH";
-    if ("03".includes(raw[0])) return "SZ";
-    if ("48".includes(raw[0])) return "BJ";
+    // 北交所：8xxxxx / 4xxxxx / 920xxx（须先于「9→SH」）
+    if (raw[0] === "8" || raw[0] === "4" || raw.startsWith("92")) return "BJ";
+    // 沪市：6xxxxx 股票 / 5xxxxx ETF / 9xxxxx（旧 B 股等）
+    if (raw[0] === "6" || raw[0] === "5" || raw[0] === "9") return "SH";
+    if (raw[0] === "0" || raw[0] === "3") return "SZ";
   }
   throw new Error(`无法推断市场: ${code}`);
 }
